@@ -25,6 +25,7 @@ extern double strtod(const char *nptr, char **endptr); /* SunOS 4 hack */
 #include "main.h"
 #include "misc.h"
 #include "scanner.h"
+#include "utf8.h"
 /*}}}*/
 
 /* identcode  -- return number of identifier */ /*{{{*/
