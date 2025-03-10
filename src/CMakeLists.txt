@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 2.6)
+cmake_minimum_required(VERSION 3.10)
 project(Teapot)
 
 set(Teapot_VERSION_MAJOR 2)
@@ -122,8 +122,8 @@ configure_file("${PROJECT_SOURCE_DIR}/config.h.in" "${PROJECT_BINARY_DIR}/config
 include_directories("${PROJECT_BINARY_DIR}")
 include_directories("${PROJECT_SOURCE_DIR}")
 
-set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE ARCH-NOTFOUND CACHE ".deb Architecture" STRING)
-set(CPACK_RPM_PACKAGE_ARCHITECTURE ARCH-NOTFOUND CACHE ".rpm Architecture" STRING)
+set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE ARCH-NOTFOUND CACHE STRING ".deb Architecture")
+set(CPACK_RPM_PACKAGE_ARCHITECTURE ARCH-NOTFOUND CACHE STRING ".rpm Architecture")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Table Editor And Planner, Or: Teapot!")
 set(CPACK_PACKAGE_DESCRIPTION "A three-dimensional spreadsheet specialized in advanced calculations. Comes in GUI (FLTK) and console (curses) flavours.")
 set(CPACK_PACKAGE_DESCRIPTION_FILE "${CMAKE_CURRENT_SOURCE_DIR}/README")
