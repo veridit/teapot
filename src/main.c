@@ -24,8 +24,13 @@ extern char *optarg;
 extern int optind,opterr,optopt;
 int getopt(int argc, char * const *argv, const char *optstring);
 #include <string.h>
+extern char *strdup(const char *s);
 #include <unistd.h>
 
+/* Ensure snprintf is declared */
+#ifndef HAVE_SNPRINTF
+extern int snprintf(char *str, size_t size, const char *format, ...);
+#endif
 
 #include "default.h"
 #include "display.h"
