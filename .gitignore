@@ -2,7 +2,7 @@
 .aider*
 !.aider.conf.yml
 !.aiderignore
-# Ignore generated build files with `cmake .`
+# Ignore build files generated with `cmake .`
 /src/CMakeFiles/*
 /src/CMakeCache.txt
 /src/CPackConfig.cmake
@@ -10,4 +10,7 @@
 /src/Makefile
 /src/cmake_install.cmake
 /src/config.h
+# Ignore built files
 /src/libteapotlib.a
+/src/teapot
+/src/teapot.lyx
