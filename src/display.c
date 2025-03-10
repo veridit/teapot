@@ -26,6 +26,9 @@
 #ifdef NEED_BCOPY
 #define memmove(dst,src,len) bcopy(src,dst,len)
 #endif
+#ifndef HAVE_SNPRINTF
+extern int snprintf(char *str, size_t size, const char *format, ...);
+#endif
 #ifdef OLD_REALLOC
 #define realloc(s,l) myrealloc(s,l)
 #endif
