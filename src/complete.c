@@ -5,6 +5,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef HAVE_STRDUP
+extern char *strdup(const char *s);
+#endif
+
 #include "complete.h"
 
 void completefile(char *file, char *pos, size_t size)
