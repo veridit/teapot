@@ -334,7 +334,7 @@ fn render_sheet(f: &mut Frame, sheet: &Sheet, area: Rect) {
                     Token::Location(loc) => format!("@({},{},{})", loc[0], loc[1], loc[2]),
                     Token::Identifier(id) => id.clone(),
                     Token::LabelIdentifier(id) => id.clone(),
-                    Token::Operator(op) => op.clone(),
+                    Token::Operator(op) => op.to_string(),
                 }
             } else {
                 String::from("")
