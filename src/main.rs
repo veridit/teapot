@@ -1,27 +1,21 @@
-//! Teapot - Table Editor And Planner, Or: Teapot
-//! 
-//! A terminal-based spreadsheet application
-
 use anyhow::{Result, Context};
 use clap::{Parser, ArgAction};
 use std::path::{Path, PathBuf};
 use std::io::{self, BufRead};
 use teapotlib::{
     Sheet,
-    display::{display_init, display_main, display_end},
+    display::display_main,
     fileio::{load_xdr, load_port, load_sc, load_wk1, load_csv},
-    utils::find_help_file
 };
 
-/// Command line arguments
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version, about = "Table Editor And Planner, Or: Teapot")]
 struct Args {
     /// Use ASCII file format as default
     #[arg(short = 'a', long, action = ArgAction::SetTrue)]
     ascii: bool,
 
-    /// Batch mode
+    /// Batch mode (read commands from stdin)
     #[arg(short = 'b', long, action = ArgAction::SetTrue)]
     batch: bool,
 
@@ -46,173 +40,89 @@ struct Args {
     file: Option<PathBuf>,
 }
 
-/// Global application state
-struct AppState {
-    /// Path to help file
-    help_file: PathBuf,
-    /// Batch mode flag
-    batch: bool,
-    /// Batch line number
-    batch_ln: usize,
-    /// Default precision
-    def_precision: usize,
-    /// Quote strings flag
-    quote: bool,
-    /// Show headers flag
-    header: bool,
-    /// Use XDR format flag
-    use_xdr: bool,
-}
-
-impl AppState {
-    fn new(args: &Args) -> Self {
-        AppState {
-            help_file: find_help_file(&std::env::args().next().unwrap_or_default()),
-            batch: args.batch,
-            batch_ln: 0,
-            def_precision: args.precision,
-            quote: args.quote,
-            header: !args.hide_headers,
-            use_xdr: !args.ascii,
-        }
-    }
-}
-
-/// Process batch mode commands
-fn process_batch(sheet: &mut Sheet, state: &mut AppState) -> Result<()> {
-    let stdin = io::stdin();
-    let mut lines = stdin.lock().lines();
-    
-    while let Some(Ok(line)) = lines.next() {
-        state.batch_ln += 1;
-        
-        // Skip empty lines
-        if line.trim().is_empty() {
-            continue;
-        }
-        
-        // Parse command and arguments
-        let parts: Vec<&str> = line.splitn(2, ' ').collect();
-        let cmd = parts[0];
-        let arg = parts.get(1).unwrap_or(&"").trim();
-        
-        match cmd {
-            "goto" => {
-                println!("Batch command: goto {}", arg);
-                // TODO: Implement goto
-            },
-            "from" => {
-                println!("Batch command: from {}", arg);
-                // TODO: Implement from
-            },
-            "to" => {
-                println!("Batch command: to {}", arg);
-                // TODO: Implement to
-            },
-            "save-tbl" => {
-                println!("Batch command: save-tbl {}", arg);
-                // TODO: Implement save-tbl
-            },
-            "save-latex" => {
-                println!("Batch command: save-latex {}", arg);
-                // TODO: Implement save-latex
-            },
-            "save-context" => {
-                println!("Batch command: save-context {}", arg);
-                // TODO: Implement save-context
-            },
-            "save-csv" => {
-                println!("Batch command: save-csv {}", arg);
-                // TODO: Implement save-csv
-            },
-            "save-html" => {
-                println!("Batch command: save-html {}", arg);
-                // TODO: Implement save-html
-            },
-            "load-csv" => {
-                println!("Batch command: load-csv {}", arg);
-                // TODO: Implement load-csv
-            },
-            "sort-x" => {
-                println!("Batch command: sort-x {}", arg);
-                // TODO: Implement sort-x
-            },
-            "sort-y" => {
-                println!("Batch command: sort-y {}", arg);
-                // TODO: Implement sort-y
-            },
-            "sort-z" => {
-                println!("Batch command: sort-z {}", arg);
-                // TODO: Implement sort-z
-            },
-            _ => {
-                println!("Unknown batch command: {}", cmd);
-            }
-        }
-    }
-    
-    Ok(())
-}
-
 /// Load a file based on its extension
 fn load_file(sheet: &mut Sheet, path: &Path, use_xdr: bool) -> Result<()> {
+    let filename = path.to_str().unwrap_or("");
     if let Some(extension) = path.extension().and_then(|e| e.to_str()) {
         match extension.to_lowercase().as_str() {
-            "tpa" => load_port(sheet, path.to_str().unwrap())?,
-            "sc" => load_sc(sheet, path.to_str().unwrap())?,
-            "wk1" => load_wk1(sheet, path.to_str().unwrap())?,
-            "csv" => load_csv(sheet, path.to_str().unwrap())?,
+            "tpa" => load_port(sheet, filename)?,
+            "sc" => load_sc(sheet, filename)?,
+            "wk1" => load_wk1(sheet, filename)?,
+            "csv" => load_csv(sheet, filename)?,
             _ => {
-                // Default to XDR or ASCII format
                 if use_xdr {
-                    load_xdr(sheet, path.to_str().unwrap())?;
+                    load_xdr(sheet, filename)?;
                 } else {
-                    load_port(sheet, path.to_str().unwrap())?;
+                    load_port(sheet, filename)?;
                 }
             }
         }
+    } else if use_xdr {
+        load_xdr(sheet, filename)?;
     } else {
-        // No extension, use default format
-        if use_xdr {
-            load_xdr(sheet, path.to_str().unwrap())?;
-        } else {
-            load_port(sheet, path.to_str().unwrap())?;
+        load_port(sheet, filename)?;
+    }
+    Ok(())
+}
+
+/// Process batch mode commands from stdin
+fn process_batch(sheet: &mut Sheet) -> Result<()> {
+    let stdin = io::stdin();
+    for line_result in stdin.lock().lines() {
+        let line = line_result?;
+        let line = line.trim();
+        if line.is_empty() { continue; }
+
+        let parts: Vec<&str> = line.splitn(2, ' ').collect();
+        let cmd = parts[0];
+        let arg = parts.get(1).map(|s| s.trim()).unwrap_or("");
+
+        match cmd {
+            "goto" => {
+                let coords: Vec<&str> = arg.split(',').collect();
+                if coords.len() >= 2 {
+                    if let (Ok(x), Ok(y)) = (coords[0].trim().parse(), coords[1].trim().parse()) {
+                        sheet.cur_x = x;
+                        sheet.cur_y = y;
+                        if coords.len() > 2 {
+                            if let Ok(z) = coords[2].trim().parse() {
+                                sheet.cur_z = z;
+                            }
+                        }
+                    }
+                }
+            }
+            "save-csv" => {
+                teapotlib::fileio::save_csv(sheet, arg, ',',
+                    0, 0, 0, sheet.dim_x.saturating_sub(1), sheet.dim_y.saturating_sub(1), 0)?;
+            }
+            "load-csv" => {
+                load_csv(sheet, arg)?;
+            }
+            _ => {
+                eprintln!("Unknown batch command: {}", cmd);
+            }
         }
     }
-    
     Ok(())
 }
 
 fn main() -> Result<()> {
-    // Parse command line arguments
     let args = Args::parse();
-    
-    // Initialize application state
-    let mut app_state = AppState::new(&args);
-    
-    // Create a new sheet
     let mut sheet = Sheet::new();
-    
-    // Set sheet name and load file if provided
+
     if let Some(file_path) = &args.file {
-        if let Some(file_name) = file_path.to_str() {
-            sheet.name = Some(file_name.to_string());
-            
-            // Load the file based on extension
-            load_file(&mut sheet, file_path, app_state.use_xdr)
-                .with_context(|| format!("Failed to load file: {}", file_name))?;
-        }
+        let name = file_path.to_str().unwrap_or("").to_string();
+        sheet.name = Some(name.clone());
+        load_file(&mut sheet, file_path, !args.ascii)
+            .with_context(|| format!("Failed to load file: {}", name))?;
     }
-    
-    if app_state.batch {
-        // Process batch mode
-        process_batch(&mut sheet, &mut app_state)?;
+
+    if args.batch {
+        process_batch(&mut sheet)?;
     } else {
-        // Interactive mode
-        display_init(&sheet, args.redraw);
         display_main(&mut sheet);
-        // display_end() is now called inside display_main
     }
-    
+
     Ok(())
 }
