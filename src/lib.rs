@@ -8,6 +8,7 @@ pub mod token;
 pub mod parser;
 pub mod eval;
 pub mod scanner;
+pub mod functions;
 pub mod fileio;
 pub mod display;
 pub mod utils;

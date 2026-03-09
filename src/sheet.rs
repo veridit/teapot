@@ -216,4 +216,113 @@ impl Sheet {
         self.dim_y = y;
         self.dim_z = z;
     }
+
+    /// Look up a label in the cache and return the cell's value
+    pub fn findlabel(&self, label: &str) -> Token {
+        if let Some(&(x, y, z)) = self.label_cache.get(label) {
+            if let Some(cell) = self.get_cell(x, y, z) {
+                cell.value.clone()
+            } else {
+                Token::Empty
+            }
+        } else {
+            Token::Error(format!("label '{}' not found", label))
+        }
+    }
+
+    /// Rebuild the label cache from all cells
+    pub fn cachelabels(&mut self) {
+        self.label_cache.clear();
+        for (&(x, y, z), cell) in &self.cells {
+            if let Some(ref label) = cell.label {
+                self.label_cache.insert(label.clone(), (x, y, z));
+            }
+        }
+    }
+
+    /// Set cell contents from a token vector
+    pub fn putcont(&mut self, x: usize, y: usize, z: usize, contents: Vec<Token>) {
+        let cell = self.get_or_create_cell(x, y, z);
+        cell.contents = Some(contents);
+        cell.updated = false;
+        self.changed = true;
+
+        // Grow dimensions if needed
+        if x >= self.dim_x { self.dim_x = x + 1; }
+        if y >= self.dim_y { self.dim_y = y + 1; }
+        if z >= self.dim_z { self.dim_z = z + 1; }
+    }
+
+    /// Get the value of a cell, evaluating its formula if needed.
+    /// For now, returns the cached value (formula evaluation requires update() to run first).
+    pub fn getvalue(&mut self, x: usize, y: usize, z: usize) -> Token {
+        if let Some(cell) = self.cells.get(&(x, y, z)) {
+            cell.value.clone()
+        } else {
+            Token::Empty
+        }
+    }
+
+    /// Recalculate all cells in the sheet
+    pub fn update(&mut self) {
+        // Mark all cells as not updated
+        for cell in self.cells.values_mut() {
+            cell.updated = false;
+        }
+
+        // Collect all coords that have contents
+        let coords: Vec<(usize, usize, usize)> = self.cells.iter()
+            .filter(|(_, cell)| cell.contents.is_some())
+            .map(|(k, _)| *k)
+            .collect();
+
+        // Evaluate each cell
+        for (x, y, z) in coords {
+            self.eval_cell(x, y, z);
+        }
+    }
+
+    /// Evaluate a single cell's formula and cache the result
+    fn eval_cell(&mut self, x: usize, y: usize, z: usize) {
+        // Check if already updated or has no contents
+        let needs_eval = self.cells.get(&(x, y, z))
+            .map(|c| !c.updated && c.contents.is_some())
+            .unwrap_or(false);
+
+        if !needs_eval {
+            return;
+        }
+
+        // Take contents out to avoid borrow conflict
+        let contents = self.cells.get_mut(&(x, y, z))
+            .and_then(|c| c.contents.take());
+
+        if let Some(tokens) = contents {
+            let value = {
+                let mut ctx = crate::parser::EvalContext {
+                    sheet: self,
+                    x, y, z,
+                    max_eval: 256,
+                };
+                crate::parser::eval_tokens(&tokens, &mut ctx)
+            };
+
+            // Put contents back and store value
+            if let Some(cell) = self.cells.get_mut(&(x, y, z)) {
+                cell.contents = Some(tokens);
+                cell.value = value;
+                cell.updated = true;
+            }
+        }
+    }
+
+    /// Iterator over all cells
+    pub fn cells(&self) -> impl Iterator<Item = (&(usize, usize, usize), &Cell)> {
+        self.cells.iter()
+    }
+
+    /// Get all cell coordinates
+    pub fn cell_coords(&self) -> Vec<(usize, usize, usize)> {
+        self.cells.keys().cloned().collect()
+    }
 }
