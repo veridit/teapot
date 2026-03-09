@@ -12,6 +12,10 @@ This document outlines a detailed, incremental plan to port the Teapot spreadshe
 - Strong type system to prevent bugs at compile time
 - Growing ecosystem for terminal UI applications
 
+## Notes
+* The old build system uses cmake, the rust build must be compatible.
+* Write out the Rust source code in the src/ folder directly, matching the C files.
+
 ## Incremental Rewrite Strategy
 
 The rewrite will follow an incremental approach where we:

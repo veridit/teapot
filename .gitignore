@@ -14,3 +14,5 @@
 /src/libteapotlib.a
 /src/teapot
 /src/teapot.lyx
+# Ignore rust build files
+/target
