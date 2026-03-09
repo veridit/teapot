@@ -4,45 +4,54 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Teapot is a terminal-based spreadsheet application being rewritten from C to Rust. The original C source files remain in `src/` as reference. The Rust rewrite is in early stages (Phase 0-1 of the plan in TODO.md) — core data structures and UI scaffolding exist but the parser, evaluator, and file I/O are stubs.
+Teapot is a terminal-based spreadsheet application rewritten from C to Rust. The original C source files remain in `src/` as reference. The core expression pipeline (scan → parse → evaluate) is functional, along with portable ASCII (.tpa) and CSV file I/O, and an interactive ratatui terminal UI.
 
 ## Build Commands
 
 ```bash
-cargo build          # Build the project
-cargo run            # Run the application
-cargo run -- file.tp # Open a spreadsheet file
-cargo test           # Run tests (few tests exist currently)
-cargo clippy         # Lint
+cargo build              # Build the project
+cargo run                # Run interactive spreadsheet
+cargo run -- file.tpa    # Open a .tpa spreadsheet file
+cargo run -- file.csv    # Open a CSV file
+cargo test               # Run tests (64 tests)
+cargo clippy             # Lint
 ```
 
 ## Architecture
 
 The project produces both a library (`teapotlib`) and a binary (`teapot`).
 
+### Expression Pipeline
+
+`scanner::scan()` → `Vec<Token>` → `parser::eval_tokens()` → `Token` (result)
+
+The parser is a recursive descent evaluator that evaluates on the fly (no AST). It calls `eval::` operations directly during parsing. `EvalContext` (in parser.rs) replaces C globals and carries the sheet reference plus current cell coordinates.
+
 ### Module Structure
 
-- **`main.rs`** — CLI entry point (clap). Handles argument parsing, batch mode command dispatch, and launches the interactive UI.
-- **`lib.rs`** — Library root, re-exports all modules.
-- **`sheet.rs`** — Core data model: `Sheet` (HashMap-based 3D grid), `Cell` (value, formula, formatting, clock flags), `Adjust` enum, `Direction` enum. All coordinates are `(x, y, z)` tuples where z is the sheet layer.
-- **`token.rs`** — `Token` enum representing cell values and expression components (Empty, Integer, Float, String, Error, Location, Operator, etc.).
-- **`parser.rs`** — Expression parsing (stub). Will be recursive descent.
-- **`eval.rs`** — Expression evaluation and type operations (stub).
-- **`display.rs`** — Terminal UI using ratatui/crossterm. Three input modes: Normal, Editing, Command. Renders spreadsheet grid, status bar, and input line.
-- **`utils.rs`** — Helper functions.
-- **`fileio/`** — File I/O submodule with format-specific files:
-  - `fileio.rs` — Format detection and dispatch (by extension: `.tpa`, `.xdr`, `.csv`, `.sc`, `.wk1`)
-  - `html.rs`, `latex.rs`, `context.rs` — Export formats (stubs)
-  - `sc.rs`, `wk1.rs` — Import formats (stubs)
+- **`main.rs`** — CLI entry point (clap). File loading by extension, batch mode, interactive UI launch.
+- **`token.rs`** — `Token` enum (Empty, Integer, Float, String, Error, Location, Identifier, LabelIdentifier, Operator) and `Operator` enum (16 operators).
+- **`scanner.rs`** — Tokenizer. `scan(&str) -> Vec<Token>` and `print_tokens()` for serialization.
+- **`parser.rs`** — Recursive descent evaluator. `eval_tokens(&[Token], &mut EvalContext) -> Token`. Precedence: relational < additive < multiplicative < power < primary.
+- **`eval.rs`** — Arithmetic/comparison operations (add, sub, mul, div, pow, neg, lt, le, ge, gt, eq, ne, about_eq). Type promotion rules match C implementation.
+- **`functions.rs`** — 41 built-in functions: math, string, cell references (@, &, x, y, z), aggregates (sum, n, min, max), type conversion, utility.
+- **`sheet.rs`** — `Sheet` (HashMap-based 3D grid), `Cell`, `Adjust`, `Direction`. Key methods: `update()`, `eval_cell()`, `getvalue()`, `putcont()`, `findlabel()`, `cachelabels()`.
+- **`display.rs`** — Terminal UI (ratatui/crossterm). Three input modes: Normal, Editing, Command. Editing scans input → stores tokens → runs update().
+- **`fileio.rs`** — Portable ASCII (.tpa) load/save, CSV load/save, text export. Stubs for XDR, HTML, LaTeX, ConTeXt, SC, WK1.
 
 ### Key Design Decisions
 
 - **3D coordinates**: All cell positions use `(x, y, z)` — column, row, sheet layer.
-- **Sparse storage**: Cells stored in `HashMap<(usize, usize, usize), Cell>` — only occupied cells consume memory.
-- **Label cache**: `Sheet` maintains a separate `HashMap<String, (usize, usize, usize)>` for fast label-to-coordinate lookups.
-- **Clock system**: Cells support iterative/clocked expressions via `clock_t0`/`t1`/`t2` flags.
-- **Error handling**: Uses `anyhow::Result` throughout.
+- **Sparse storage**: `HashMap<(usize, usize, usize), Cell>`.
+- **No AST**: Parser evaluates during recursive descent, matching C design.
+- **EvalContext**: Replaces C globals (upd_sheet, upd_x, upd_y, upd_z).
+- **Take/put pattern**: `eval_cell()` takes contents out of HashMap to avoid borrow conflicts during evaluation, then puts them back.
+- **Error handling**: `anyhow::Result` for I/O, `Token::Error` for expression errors.
 
-## Current State & What Needs Work
+## What Still Needs Work
 
-The Rust code is mid-migration from a previous AI agent's work. Core data structures (`Sheet`, `Cell`, `Token`) are implemented. The display module has a working ratatui UI. Most other modules are stubs that need real implementations — especially the expression parser/evaluator and all file I/O formats. Refer to TODO.md for the phased migration plan.
+- File formats: XDR, SC, WK1, HTML export, LaTeX export, ConTeXt export
+- Sheet operations: insert/delete rows/cols, sort, copy/move blocks
+- Full UI: all keyboard commands, menus, help system, mouse support
+- Batch mode: most commands are stubs
+- Refer to TODO.md for the phased migration plan
