@@ -1,11 +1,11 @@
 use anyhow::{Result, Context};
 use clap::{Parser, ArgAction};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::io::{self, BufRead};
 use teapotlib::{
     Sheet,
     display::display_main,
-    fileio::{load_xdr, load_port, load_sc, load_wk1, load_csv},
+    fileio::{load_file, load_csv},
 };
 
 #[derive(Parser, Debug)]
@@ -38,31 +38,6 @@ struct Args {
     /// Input file
     #[arg(value_name = "FILE")]
     file: Option<PathBuf>,
-}
-
-/// Load a file based on its extension
-fn load_file(sheet: &mut Sheet, path: &Path, use_xdr: bool) -> Result<()> {
-    let filename = path.to_str().unwrap_or("");
-    if let Some(extension) = path.extension().and_then(|e| e.to_str()) {
-        match extension.to_lowercase().as_str() {
-            "tpa" => load_port(sheet, filename)?,
-            "sc" => load_sc(sheet, filename)?,
-            "wk1" => load_wk1(sheet, filename)?,
-            "csv" => load_csv(sheet, filename)?,
-            _ => {
-                if use_xdr {
-                    load_xdr(sheet, filename)?;
-                } else {
-                    load_port(sheet, filename)?;
-                }
-            }
-        }
-    } else if use_xdr {
-        load_xdr(sheet, filename)?;
-    } else {
-        load_port(sheet, filename)?;
-    }
-    Ok(())
 }
 
 /// Process batch mode commands from stdin

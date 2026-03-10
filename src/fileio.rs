@@ -344,6 +344,31 @@ pub use context::save_context;
 pub use sc::load_sc;
 pub use wk1::load_wk1;
 
+/// Load a file based on its extension
+pub fn load_file(sheet: &mut Sheet, path: &std::path::Path, use_xdr: bool) -> Result<()> {
+    let filename = path.to_str().unwrap_or("");
+    if let Some(extension) = path.extension().and_then(|e| e.to_str()) {
+        match extension.to_lowercase().as_str() {
+            "tpa" => load_port(sheet, filename)?,
+            "sc" => load_sc(sheet, filename)?,
+            "wk1" => load_wk1(sheet, filename)?,
+            "csv" => load_csv(sheet, filename)?,
+            _ => {
+                if use_xdr {
+                    load_xdr(sheet, filename)?;
+                } else {
+                    load_port(sheet, filename)?;
+                }
+            }
+        }
+    } else if use_xdr {
+        load_xdr(sheet, filename)?;
+    } else {
+        load_port(sheet, filename)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

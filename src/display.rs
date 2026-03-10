@@ -212,6 +212,20 @@ fn run_app(
                         KeyCode::Char('?') => {
                             state.input_mode = InputMode::Help;
                         }
+                        KeyCode::Char('+') | KeyCode::Char('=') => {
+                            let w = sheet.column_width(sheet.cur_x, sheet.cur_z);
+                            sheet.set_width(sheet.cur_x, sheet.cur_z, w + 1);
+                            sheet.changed = true;
+                            state.status_message = format!("Column {} width: {}", sheet.cur_x, w + 1);
+                        }
+                        KeyCode::Char('-') => {
+                            let w = sheet.column_width(sheet.cur_x, sheet.cur_z);
+                            if w > 1 {
+                                sheet.set_width(sheet.cur_x, sheet.cur_z, w - 1);
+                                sheet.changed = true;
+                                state.status_message = format!("Column {} width: {}", sheet.cur_x, w - 1);
+                            }
+                        }
                         KeyCode::Delete => {
                             // Clear current cell
                             let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
@@ -378,6 +392,84 @@ fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
                 }
             }
         }
+        "o" | "open" => {
+            if arg.is_empty() {
+                state.status_message = String::from("Usage: :open <file>");
+            } else {
+                let path = std::path::Path::new(arg);
+                let mut new_sheet = Sheet::new();
+                match crate::fileio::load_file(&mut new_sheet, path, true) {
+                    Ok(()) => {
+                        new_sheet.name = Some(arg.to_string());
+                        *sheet = new_sheet;
+                        state.status_message = format!("Opened {}", arg);
+                    }
+                    Err(e) => {
+                        state.status_message = format!("Open failed: {}", e);
+                    }
+                }
+            }
+        }
+        "width" => {
+            if arg.is_empty() {
+                let w = sheet.column_width(sheet.cur_x, sheet.cur_z);
+                state.status_message = format!("Column {} width: {}", sheet.cur_x, w);
+            } else if let Ok(w) = arg.parse::<usize>() {
+                if w > 0 {
+                    sheet.set_width(sheet.cur_x, sheet.cur_z, w);
+                    sheet.changed = true;
+                    state.status_message = format!("Column {} width set to {}", sheet.cur_x, w);
+                } else {
+                    state.status_message = String::from("Width must be > 0");
+                }
+            } else {
+                state.status_message = String::from("Usage: :width <number>");
+            }
+        }
+        "precision" => {
+            if let Ok(p) = arg.parse::<i32>() {
+                let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
+                let cell = sheet.get_or_create_cell(x, y, z);
+                cell.precision = p;
+                sheet.changed = true;
+                state.status_message = format!("Precision set to {}", p);
+            } else {
+                state.status_message = String::from("Usage: :precision <number>");
+            }
+        }
+        "bold" => {
+            let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
+            let cell = sheet.get_or_create_cell(x, y, z);
+            cell.bold = !cell.bold;
+            let val = cell.bold;
+            sheet.changed = true;
+            state.status_message = format!("Bold: {}", val);
+        }
+        "underline" => {
+            let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
+            let cell = sheet.get_or_create_cell(x, y, z);
+            cell.underline = !cell.underline;
+            let val = cell.underline;
+            sheet.changed = true;
+            state.status_message = format!("Underline: {}", val);
+        }
+        "align" => {
+            let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
+            let cell = sheet.get_or_create_cell(x, y, z);
+            match arg {
+                "left" | "l" => { cell.adjust = crate::sheet::Adjust::Left; }
+                "right" | "r" => { cell.adjust = crate::sheet::Adjust::Right; }
+                "center" | "c" => { cell.adjust = crate::sheet::Adjust::Center; }
+                "auto" | "a" => { cell.adjust = crate::sheet::Adjust::AutoAdjust; }
+                _ => {
+                    state.status_message = String::from("Usage: :align left|right|center|auto");
+                    return;
+                }
+            }
+            let val = format!("{:?}", cell.adjust);
+            sheet.changed = true;
+            state.status_message = format!("Alignment: {}", val);
+        }
         "help" => {
             state.input_mode = InputMode::Help;
         }
@@ -475,7 +567,7 @@ fn render_help(f: &mut Frame, area: Rect) {
     j / Down      Move down           J   Page down
     k / Up        Move up             K   Page up
     l / Right     Move right          L   Page right
-    Tab           Next sheet
+    Tab           Next sheet          +/- Widen/narrow column
 
   Editing
     e / Enter     Edit cell (enter formula or value)
@@ -483,12 +575,12 @@ fn render_help(f: &mut Frame, area: Rect) {
     Esc           Cancel editing
 
   Commands (press : to enter command mode)
-    :w [file]     Save (.tpa format)
-    :goto x,y[,z] Move to cell
+    :w [file]     Save (.tpa format)    :o <file>  Open file
+    :q            Quit                  :q!        Force quit
+    :wq           Save and quit         :goto x,y  Move to cell
+    :width N      Set column width      :align l/r/c/a
+    :precision N  Set decimal places    :bold  :underline
     :help         Show this help
-    :q            Quit (warns if unsaved)
-    :q!           Force quit
-    :wq           Save and quit
 
   Formulas
     Numbers       42, 3.14
