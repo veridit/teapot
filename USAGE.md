@@ -304,14 +304,87 @@ eval(@(x, y, z))        # re-evaluate a cell's formula
 
 ### Built-in Functions
 
-**Math:** `abs`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `arsinh`, `arcosh`, `artanh`, `deg2rad`, `rad2deg`, `log`, `e`, `rnd`, `poly`
+#### Cell References
 
-**String:** `len`, `substr`
+| Function | Description |
+|----------|-------------|
+| `@()` | Value of current cell |
+| `@(x)` | Value at column x, current row and sheet |
+| `@(x, y)` | Value at (x, y), current sheet |
+| `@(x, y, z)` | Value at absolute coordinates |
+| `@(location)` | Value at a location token (e.g. from `min()`) |
+| `@("label")` | Value of labeled cell |
+| `&()` | Location of current cell |
+| `&(x)` | Location (x, cur_y, cur_z) |
+| `&(x, y)` | Location (x, y, cur_z) |
+| `&(x, y, z)` | Location at absolute coordinates |
+| `x()` / `y()` / `z()` | Current cell's x / y / z coordinate |
+| `x(loc)` / `y(loc)` / `z(loc)` | Extract coordinate from a location |
 
-**Cell references:** `@` (value at location or label), `&` (address from coordinates), `x`, `y`, `z` (extract coordinate)
+Empty arguments use defaults: `@(,5,)` means `@(cur_x, 5, cur_z)`.
 
-**Aggregates:** `sum`, `n` (count), `min`, `max`
+#### Math
 
-**Type conversion:** `int`, `float`, `frac`, `string`, `error`
+| Function | Description |
+|----------|-------------|
+| `abs(n)` | Absolute value (preserves integer type) |
+| `sin(x)` / `cos(x)` / `tan(x)` | Trigonometric functions (radians) |
+| `asin(x)` / `acos(x)` / `atan(x)` | Inverse trigonometric |
+| `sinh(x)` / `cosh(x)` / `tanh(x)` | Hyperbolic |
+| `arsinh(x)` / `arcosh(x)` / `artanh(x)` | Inverse hyperbolic |
+| `deg2rad(x)` / `rad2deg(x)` | Angle conversion |
+| `log(x)` | Natural logarithm |
+| `log(x, base)` | Logarithm with specified base |
+| `e()` | Euler's number (2.718…) |
+| `e(x)` | e raised to power x |
+| `rnd()` | Random float in [0, 1) |
+| `poly(x, c0, c1, …)` | Polynomial: c0 + c1·x + c2·x² + … |
 
-**Utility:** `eval` (re-evaluate formula), `clock` (clocked cell value), `$` (environment variable), `time`, `strftime`, `strptime`
+#### String
+
+| Function | Description |
+|----------|-------------|
+| `len(s)` | Length of string |
+| `substr(s, start, end)` | Substring from index `start` to `end` (inclusive, 0-based) |
+
+#### Aggregates
+
+All aggregate functions take two location arguments defining a range.
+
+| Function | Description |
+|----------|-------------|
+| `sum(loc1, loc2)` | Sum of all values in range |
+| `n(loc1, loc2)` | Count of non-empty cells in range |
+| `min(loc1, loc2)` | **Location** of the cell with the minimum value |
+| `max(loc1, loc2)` | **Location** of the cell with the maximum value |
+
+`min()` and `max()` return a location, not a value. Use `@(min(…))` to get the value, or `x(min(…))` to get its column.
+
+#### Type Conversion
+
+| Function | Description |
+|----------|-------------|
+| `int(n)` | Convert float to integer (truncates toward zero) |
+| `int("s")` | Parse string as integer |
+| `int(n, neg_mode, pos_mode)` | Rounding control — mode: <−1 floor, −1 away from zero, 0 truncate, 1 toward zero, >1 ceil |
+| `float(n)` | Convert to float |
+| `frac(n)` | Fractional part (e.g. `frac(3.14)` = 0.14) |
+| `string(n)` | Convert to string |
+| `string(n, precision)` | Format with decimal places (e.g. `string(3.14159, 2)` = "3.14") |
+| `string(n, precision, mode)` | Mode 0 = fixed, non-zero = scientific notation |
+| `error("msg")` | Create an error value |
+
+#### Utility
+
+| Function | Description |
+|----------|-------------|
+| `eval(location)` | Re-evaluate a cell's formula (not cached value) |
+| `clock()` | Read clocked value of current cell |
+| `clock(init)` | Read clocked value, using init as default |
+| `clock(cond, loc)` | If cond ≠ 0, enable clock on cell at loc |
+| `clock(cond, loc1, loc2)` | Enable clock on two cells |
+| `$("NAME")` | Read environment variable |
+| `time()` | Current unix timestamp (integer) |
+| `strftime(fmt)` | Format current time (e.g. `strftime("%Y-%m-%d")`) |
+| `strftime(fmt, timestamp)` | Format given unix timestamp |
+| `strptime(fmt, string)` | Parse time string → unix timestamp |
