@@ -290,9 +290,15 @@ impl Sheet {
         if z >= self.dim_z { self.dim_z = z + 1; }
     }
 
-    /// Get the value of a cell, evaluating its formula if needed.
-    /// For now, returns the cached value (formula evaluation requires update() to run first).
+    /// Get the value of a cell, evaluating its formula on demand if needed.
     pub fn getvalue(&mut self, x: usize, y: usize, z: usize) -> Token {
+        // Evaluate on demand if not yet updated (lazy evaluation like C original)
+        let needs_eval = self.cells.get(&(x, y, z))
+            .map(|c| !c.updated && c.contents.is_some())
+            .unwrap_or(false);
+        if needs_eval {
+            self.eval_cell(x, y, z);
+        }
         if let Some(cell) = self.cells.get(&(x, y, z)) {
             cell.value.clone()
         } else {
