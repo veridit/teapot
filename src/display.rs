@@ -157,6 +157,20 @@ fn run_app(
                         KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             return Ok(());
                         }
+                        KeyCode::Char('z') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            if sheet.undo() {
+                                state.status_message = String::from("Undone");
+                            } else {
+                                state.status_message = String::from("Nothing to undo");
+                            }
+                        }
+                        KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            if sheet.redo() {
+                                state.status_message = String::from("Redone");
+                            } else {
+                                state.status_message = String::from("Nothing to redo");
+                            }
+                        }
                         KeyCode::Char('e') | KeyCode::Enter => {
                             state.input_mode = InputMode::Editing;
                             state.input_buffer.clear();
@@ -250,8 +264,41 @@ fn run_app(
                             sheet.clear_mark();
                             state.status_message = String::from("Mark cleared");
                         }
+                        KeyCode::Char('y') => {
+                            let count = sheet.yank_block();
+                            if count > 0 {
+                                state.status_message = format!("Yanked {} cells", count);
+                            } else {
+                                state.status_message = String::from("No block marked to yank");
+                            }
+                        }
+                        KeyCode::Char('p') => {
+                            if sheet.clipboard.is_empty() {
+                                state.status_message = String::from("Clipboard empty");
+                            } else {
+                                let count = sheet.paste();
+                                state.status_message = format!("Pasted {} cells", count);
+                            }
+                        }
+                        KeyCode::Home => {
+                            sheet.cur_x = 0;
+                            sheet.cur_y = 0;
+                        }
+                        KeyCode::End => {
+                            sheet.cur_x = sheet.dim_x.saturating_sub(1);
+                            sheet.cur_y = sheet.dim_y.saturating_sub(1);
+                        }
+                        KeyCode::PageUp => {
+                            let page = visible_rows(state.terminal_area);
+                            sheet.cur_y = sheet.cur_y.saturating_sub(page);
+                        }
+                        KeyCode::PageDown => {
+                            let page = visible_rows(state.terminal_area);
+                            sheet.cur_y += page;
+                        }
                         KeyCode::Delete => {
                             // Clear current cell
+                            sheet.save_undo();
                             let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
                             if let Some(cell) = sheet.get_cell_mut(x, y, z) {
                                 cell.contents = None;
@@ -267,6 +314,7 @@ fn run_app(
                 InputMode::Editing => {
                     match key.code {
                         KeyCode::Enter => {
+                            sheet.save_undo();
                             let input = state.input_buffer.trim().to_string();
                             let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
                             if input.is_empty() {
@@ -551,6 +599,7 @@ fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
         }
         "clear" => {
             if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                sheet.save_undo();
                 let count = sheet.clear_block(x1, y1, z1, x2, y2, z2);
                 sheet.clear_mark();
                 sheet.update();
@@ -561,6 +610,7 @@ fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
         }
         "copy" => {
             if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                sheet.save_undo();
                 let count = sheet.copy_block(x1, y1, z1, x2, y2, z2,
                     sheet.cur_x, sheet.cur_y, sheet.cur_z);
                 sheet.clear_mark();
@@ -572,24 +622,74 @@ fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
             }
         }
         "ir" | "insert-row" => {
+            sheet.save_undo();
             sheet.insert_row(sheet.cur_y, sheet.cur_z);
             sheet.update();
             state.status_message = format!("Inserted row at {}", sheet.cur_y);
         }
         "dr" | "delete-row" => {
+            sheet.save_undo();
             sheet.delete_row(sheet.cur_y, sheet.cur_z);
             sheet.update();
             state.status_message = format!("Deleted row {}", sheet.cur_y);
         }
         "ic" | "insert-col" => {
+            sheet.save_undo();
             sheet.insert_col(sheet.cur_x, sheet.cur_z);
             sheet.update();
             state.status_message = format!("Inserted column at {}", sheet.cur_x);
         }
         "dc" | "delete-col" => {
+            sheet.save_undo();
             sheet.delete_col(sheet.cur_x, sheet.cur_z);
             sheet.update();
             state.status_message = format!("Deleted column {}", sheet.cur_x);
+        }
+        "undo" => {
+            if sheet.undo() {
+                state.status_message = String::from("Undone");
+            } else {
+                state.status_message = String::from("Nothing to undo");
+            }
+        }
+        "redo" => {
+            if sheet.redo() {
+                state.status_message = String::from("Redone");
+            } else {
+                state.status_message = String::from("Nothing to redo");
+            }
+        }
+        "yank" => {
+            let count = sheet.yank_block();
+            if count > 0 {
+                state.status_message = format!("Yanked {} cells", count);
+            } else {
+                state.status_message = String::from("No block marked to yank");
+            }
+        }
+        "paste" => {
+            if sheet.clipboard.is_empty() {
+                state.status_message = String::from("Clipboard empty");
+            } else {
+                let count = sheet.paste();
+                state.status_message = format!("Pasted {} cells", count);
+            }
+        }
+        "export-text" | "save-text" => {
+            if arg.is_empty() {
+                state.status_message = String::from("Usage: :export-text <file>");
+            } else {
+                let x2 = sheet.dim_x.saturating_sub(1);
+                let y2 = sheet.dim_y.saturating_sub(1);
+                match crate::fileio::save_text(sheet, arg, 0, 0, 0, x2, y2, 0) {
+                    Ok(count) => {
+                        state.status_message = format!("Exported {} cells to {}", count, arg);
+                    }
+                    Err(e) => {
+                        state.status_message = format!("Export failed: {}", e);
+                    }
+                }
+            }
         }
         "help" => {
             state.input_mode = InputMode::Help;
@@ -688,11 +788,15 @@ fn render_help(f: &mut Frame, area: Rect) {
     j / Down      Move down           J   Page down
     k / Up        Move up             K   Page up
     l / Right     Move right          L   Page right
-    Tab           Next sheet          +/- Widen/narrow column
+    Home          Go to (0,0)         End Go to last cell
+    PgUp/PgDn     Page up/down        Tab Next sheet
+    +/-           Widen/narrow column
 
   Editing
     e / Enter     Edit cell            m   Mark block (twice)
     Delete        Clear current cell   u   Clear mark
+    y             Yank (copy) block    p   Paste at cursor
+    Ctrl+Z        Undo                 Ctrl+Y  Redo
     Esc           Cancel editing
 
   Commands (press : to enter command mode)
@@ -702,10 +806,12 @@ fn render_help(f: &mut Frame, area: Rect) {
     :width N      Set column width      :align l/r/c/a
     :precision N  Set decimal places    :bold  :underline
     :ir/:dr       Insert/delete row     :ic/:dc    Insert/delete col
+    :yank         Yank block to clip    :paste     Paste at cursor
+    :undo         Undo last change      :redo      Redo last undo
     :copy         Copy block to cursor  :clear     Clear marked block
-    :export-csv   Export as CSV         :export-html  Export as HTML
-    :export-latex Export as LaTeX       :export-context  Export as ConTeXt
-    :help         Show this help
+    :export-text  Export as plain text  :export-csv   Export as CSV
+    :export-html  Export as HTML        :export-latex Export as LaTeX
+    :export-context  Export as ConTeXt  :help         Show this help
 
   Formulas
     Numbers       42, 3.14

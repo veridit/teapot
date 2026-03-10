@@ -104,6 +104,16 @@ pub struct SortKey {
     pub sort_key: u32,
 }
 
+/// Snapshot of sheet data for undo
+#[derive(Debug, Clone)]
+struct UndoSnapshot {
+    cells: HashMap<(usize, usize, usize), Cell>,
+    column_widths: HashMap<(usize, usize), usize>,
+    dim_x: usize,
+    dim_y: usize,
+    dim_z: usize,
+}
+
 /// Sheet represents the entire spreadsheet
 #[derive(Debug)]
 pub struct Sheet {
@@ -149,6 +159,12 @@ pub struct Sheet {
     pub clk: bool,
     /// Label cache for quick lookups
     label_cache: HashMap<String, (usize, usize, usize)>,
+    /// Undo stack (snapshots of cell data)
+    undo_stack: Vec<UndoSnapshot>,
+    /// Redo stack (snapshots popped from undo)
+    redo_stack: Vec<UndoSnapshot>,
+    /// Clipboard: copied cells with relative positions
+    pub clipboard: Vec<((usize, usize, usize), Cell)>,
 }
 
 impl Sheet {
@@ -182,6 +198,9 @@ impl Sheet {
             move_only: false,
             clk: false,
             label_cache: HashMap::new(),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            clipboard: Vec::new(),
         }
     }
 
@@ -525,6 +544,120 @@ impl Sheet {
         self.mark2_y = None;
         self.mark2_z = None;
         self.marking = false;
+    }
+
+    /// Save a snapshot of all cell data for undo (call before mutating)
+    pub fn save_undo(&mut self) {
+        // New action invalidates redo history
+        self.redo_stack.clear();
+        // Keep max 50 undo levels
+        if self.undo_stack.len() >= 50 {
+            self.undo_stack.remove(0);
+        }
+        self.undo_stack.push(UndoSnapshot {
+            cells: self.cells.clone(),
+            column_widths: self.column_widths.clone(),
+            dim_x: self.dim_x,
+            dim_y: self.dim_y,
+            dim_z: self.dim_z,
+        });
+    }
+
+    /// Undo the last operation, restoring the previous snapshot
+    pub fn undo(&mut self) -> bool {
+        if let Some(snapshot) = self.undo_stack.pop() {
+            // Save current state to redo stack
+            self.redo_stack.push(UndoSnapshot {
+                cells: self.cells.clone(),
+                column_widths: self.column_widths.clone(),
+                dim_x: self.dim_x,
+                dim_y: self.dim_y,
+                dim_z: self.dim_z,
+            });
+            self.cells = snapshot.cells;
+            self.column_widths = snapshot.column_widths;
+            self.dim_x = snapshot.dim_x;
+            self.dim_y = snapshot.dim_y;
+            self.dim_z = snapshot.dim_z;
+            self.cachelabels();
+            self.update();
+            self.changed = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Redo the last undone operation
+    pub fn redo(&mut self) -> bool {
+        if let Some(snapshot) = self.redo_stack.pop() {
+            // Save current state to undo stack (without clearing redo)
+            self.undo_stack.push(UndoSnapshot {
+                cells: self.cells.clone(),
+                column_widths: self.column_widths.clone(),
+                dim_x: self.dim_x,
+                dim_y: self.dim_y,
+                dim_z: self.dim_z,
+            });
+            self.cells = snapshot.cells;
+            self.column_widths = snapshot.column_widths;
+            self.dim_x = snapshot.dim_x;
+            self.dim_y = snapshot.dim_y;
+            self.dim_z = snapshot.dim_z;
+            self.cachelabels();
+            self.update();
+            self.changed = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Yank (copy) the marked block into the clipboard
+    pub fn yank_block(&mut self) -> usize {
+        self.clipboard.clear();
+        if let Some((x1, y1, z1, x2, y2, z2)) = self.get_mark_range() {
+            for z in z1..=z2 {
+                for y in y1..=y2 {
+                    for x in x1..=x2 {
+                        if let Some(cell) = self.get_cell(x, y, z) {
+                            // Store with relative position from mark origin
+                            self.clipboard.push(((x - x1, y - y1, z - z1), cell.clone()));
+                        }
+                    }
+                }
+            }
+            self.clipboard.len()
+        } else {
+            0
+        }
+    }
+
+    /// Paste the clipboard at the current cursor position
+    pub fn paste(&mut self) -> usize {
+        if self.clipboard.is_empty() {
+            return 0;
+        }
+        self.save_undo();
+        let base_x = self.cur_x;
+        let base_y = self.cur_y;
+        let base_z = self.cur_z;
+        let count = self.clipboard.len();
+        let items: Vec<_> = self.clipboard.clone();
+        for ((dx, dy, dz), cell) in items {
+            let x = base_x + dx;
+            let y = base_y + dy;
+            let z = base_z + dz;
+            let target = self.get_or_create_cell(x, y, z);
+            *target = cell;
+            if x >= self.dim_x { self.dim_x = x + 1; }
+            if y >= self.dim_y { self.dim_y = y + 1; }
+            if z >= self.dim_z { self.dim_z = z + 1; }
+        }
+        self.changed = true;
+        self.cachelabels();
+        self.update();
+        count
     }
 }
 
