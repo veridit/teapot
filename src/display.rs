@@ -23,6 +23,7 @@ struct DisplayState {
     input_buffer: String,
     cursor_position: usize,
     terminal_area: Rect,
+    should_quit: bool,
 }
 
 enum InputMode {
@@ -40,6 +41,7 @@ impl Default for DisplayState {
             input_buffer: String::new(),
             cursor_position: 0,
             terminal_area: Rect::default(),
+            should_quit: false,
         }
     }
 }
@@ -299,6 +301,9 @@ fn run_app(
                 }
             }
         }
+        if state.should_quit {
+            return Ok(());
+        }
     }
 }
 
@@ -310,7 +315,28 @@ fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
 
     match command {
         "q" | "quit" => {
-            state.status_message = String::from("Use Ctrl+Q to quit");
+            if sheet.changed {
+                state.status_message = String::from("Unsaved changes. Use :q! to force quit, or :wq to save and quit.");
+            } else {
+                state.should_quit = true;
+            }
+        }
+        "q!" => {
+            state.should_quit = true;
+        }
+        "wq" => {
+            let filename = sheet.name.clone().unwrap_or_else(|| "sheet.tpa".to_string());
+            match crate::fileio::save_port(sheet, &filename) {
+                Ok(count) => {
+                    sheet.name = Some(filename.clone());
+                    sheet.changed = false;
+                    state.status_message = format!("Saved {} cells to {}", count, filename);
+                    state.should_quit = true;
+                }
+                Err(e) => {
+                    state.status_message = format!("Save failed: {}", e);
+                }
+            }
         }
         "w" | "write" => {
             let filename = if arg.is_empty() {
@@ -460,7 +486,9 @@ fn render_help(f: &mut Frame, area: Rect) {
     :w [file]     Save (.tpa format)
     :goto x,y[,z] Move to cell
     :help         Show this help
-    :q            Quit hint (use Ctrl+Q)
+    :q            Quit (warns if unsaved)
+    :q!           Force quit
+    :wq           Save and quit
 
   Formulas
     Numbers       42, 3.14
@@ -490,7 +518,8 @@ fn render_sheet(f: &mut Frame, sheet: &Sheet, area: Rect) {
     let mut used_width = row_num_width;
 
     let start_col = sheet.off_x;
-    for x in start_col..sheet.dim_x {
+    let max_col = sheet.dim_x.max(sheet.cur_x + 1);
+    for x in start_col..max_col {
         let w = sheet.column_width(x, z) as u16;
         if used_width + w + 1 > area.width {
             break;
