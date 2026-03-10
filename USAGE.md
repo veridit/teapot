@@ -157,6 +157,29 @@ Clocked cells use a three-phase commit system for iterative calculations (e.g. c
 | `C` (Shift+c) | Trigger one clock tick |
 | `:clock-run` | Run clock until stable (max 1000 ticks) |
 
+## Search and Replace
+
+Press `n` to open the search bar. Type a regex pattern — results update as you type. Press Enter or `n` again to jump to the next match. Press `N` for the previous match. Press Esc to close and clear highlights.
+
+Matching cells are highlighted in yellow; the current match is highlighted in bright yellow.
+
+| Key / Command | Description |
+|---------------|-------------|
+| `n` | Open search / next match |
+| `N` | Previous match |
+| `Esc` | Clear search results |
+| `:search <pattern>` / `:s <pattern>` | Search current sheet |
+| `:search-all <pattern>` | Search all sheets |
+| `:search-formula <pattern>` | Search in formulas instead of values |
+| `:replace <search> <replace>` / `:r <s> <r>` | Search and replace with confirmation |
+| `:replace-all <search> <replace>` | Replace all without confirmation |
+
+In the search bar: `Ctrl+F` toggles between searching values and formulas. `Ctrl+R` toggles regex vs literal mode. `Tab` switches focus between search and replace fields.
+
+During replace confirmation: `y` replaces and advances, `n` skips, `a` replaces all remaining, `q` or Esc cancels.
+
+Regex patterns support capture groups — use `$1`, `$2` etc. in the replacement string.
+
 ## Command Palette
 
 Press `/` or `F1` to open the command palette. Type to filter commands, use Up/Down to navigate, Enter to execute, Esc to cancel.
@@ -215,6 +238,8 @@ EOF
 | `fill cols rows [layers]` | Fill marked block |
 | `clock` | Toggle clock on current cell |
 | `clock-tick` | Run one clock tick |
+| `search <pattern>` | Print matching cell coordinates and values |
+| `replace <pattern> <replacement>` | Replace all matches (no confirmation) |
 | `load <file>` | Load file |
 | `load-csv <file>` | Load CSV |
 | `save [file]` | Save (.tp/.tpz/.xlsx) |

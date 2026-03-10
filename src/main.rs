@@ -2,6 +2,7 @@ use anyhow::{Result, Context};
 use clap::{Parser, ArgAction};
 use std::path::PathBuf;
 use std::io::{self, BufRead};
+use regex::Regex;
 use teapotlib::{
     Sheet,
     display::display_main,
@@ -329,6 +330,48 @@ fn process_batch(sheet: &mut Sheet) -> Result<()> {
                 match fileio::save_text(sheet, arg, 0, 0, 0, x2, y2, 0) {
                     Ok(_) => {}
                     Err(e) => eprintln!("save-text: {}", e),
+                }
+            }
+            "search" => {
+                if arg.is_empty() {
+                    eprintln!("search: expected pattern");
+                } else {
+                    match Regex::new(arg) {
+                        Ok(re) => {
+                            let results = sheet.search_cells(sheet.cur_z, &re, true);
+                            for (x, y, z) in &results {
+                                let val = sheet.get_cell(*x, *y, *z)
+                                    .map(|c| c.value.to_string())
+                                    .unwrap_or_default();
+                                println!("({},{},{}) {}", x, y, z, val);
+                            }
+                            if results.is_empty() {
+                                eprintln!("No matches for '{}'", arg);
+                            }
+                        }
+                        Err(e) => eprintln!("search: invalid regex: {}", e),
+                    }
+                }
+            }
+            "replace" => {
+                let rparts: Vec<&str> = arg.splitn(2, ' ').collect();
+                if rparts.len() == 2 {
+                    match Regex::new(rparts[0]) {
+                        Ok(re) => {
+                            let results = sheet.search_cells(sheet.cur_z, &re, true);
+                            let mut count = 0;
+                            for &(x, y, z) in &results {
+                                if sheet.replace_cell(x, y, z, &re, rparts[1], true) {
+                                    count += 1;
+                                }
+                            }
+                            sheet.update();
+                            eprintln!("Replaced {} matches", count);
+                        }
+                        Err(e) => eprintln!("replace: invalid regex: {}", e),
+                    }
+                } else {
+                    eprintln!("replace: expected <pattern> <replacement>");
                 }
             }
             _ => {

@@ -45,6 +45,7 @@ See [USAGE.md](USAGE.md) for the full keyboard reference and command list.
 | `y` / `p` | Yank / paste |
 | `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
 | `[` / `]` | Previous / next sheet |
+| `n` / `N` | Search next / previous |
 | `C` | Clock tick |
 | `Ctrl+Q` | Quit |
 

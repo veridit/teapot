@@ -1,6 +1,7 @@
 //! Sheet module - defines the spreadsheet data structure
 
 use crate::token::Token;
+use regex::Regex;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
@@ -934,6 +935,91 @@ impl Sheet {
             cell.clock_t1 = false;
         }
         cell.clock_t2
+    }
+
+    /// Search cells on a sheet layer, return matching coordinates sorted by (z, y, x)
+    pub fn search_cells(&self, z: usize, pattern: &Regex, search_values: bool) -> Vec<(usize, usize, usize)> {
+        let mut results: Vec<(usize, usize, usize)> = self.cells.iter()
+            .filter(|(&(_, _, cz), _)| cz == z)
+            .filter(|(&(x, y, z), cell)| {
+                let text = if search_values {
+                    cell.value.to_string()
+                } else {
+                    cell.contents.as_ref()
+                        .map(|c| crate::scanner::print_tokens(c, true, cell.scientific, cell.precision))
+                        .unwrap_or_default()
+                };
+                let _ = (x, y, z); // suppress unused
+                pattern.is_match(&text)
+            })
+            .map(|(&k, _)| k)
+            .collect();
+        results.sort_by(|a, b| a.2.cmp(&b.2).then(a.1.cmp(&b.1)).then(a.0.cmp(&b.0)));
+        results
+    }
+
+    /// Search all layers, return matching coordinates sorted by (z, y, x)
+    pub fn search_all_cells(&self, pattern: &Regex, search_values: bool) -> Vec<(usize, usize, usize)> {
+        let mut results: Vec<(usize, usize, usize)> = self.cells.iter()
+            .filter(|(_, cell)| {
+                let text = if search_values {
+                    cell.value.to_string()
+                } else {
+                    cell.contents.as_ref()
+                        .map(|c| crate::scanner::print_tokens(c, true, cell.scientific, cell.precision))
+                        .unwrap_or_default()
+                };
+                pattern.is_match(&text)
+            })
+            .map(|(&k, _)| k)
+            .collect();
+        results.sort_by(|a, b| a.2.cmp(&b.2).then(a.1.cmp(&b.1)).then(a.0.cmp(&b.0)));
+        results
+    }
+
+    /// Replace cell content matching pattern. Returns true if replacement was made.
+    pub fn replace_cell(&mut self, x: usize, y: usize, z: usize, pattern: &Regex, replacement: &str, in_values: bool) -> bool {
+        let cell = match self.cells.get(&(x, y, z)) {
+            Some(c) => c,
+            None => return false,
+        };
+
+        if in_values {
+            // Replace in the display value: re-scan the replaced string as new content
+            let text = cell.value.to_string();
+            let is_string_value = matches!(cell.value, Token::String(_));
+            if pattern.is_match(&text) {
+                let new_text = pattern.replace_all(&text, replacement).to_string();
+                // If the original was a string value, wrap in quotes
+                let scan_input = if is_string_value {
+                    format!("\"{}\"", new_text.replace('"', "\\\""))
+                } else {
+                    new_text
+                };
+                let new_contents = match crate::scanner::scan(&scan_input) {
+                    Ok(tokens) => tokens,
+                    Err(_) => return false,
+                };
+                self.putcont(x, y, z, new_contents);
+                return true;
+            }
+        } else {
+            // Replace in formula text
+            let formula = cell.contents.as_ref()
+                .map(|c| crate::scanner::print_tokens(c, true, cell.scientific, cell.precision))
+                .unwrap_or_default();
+            if pattern.is_match(&formula) {
+                let new_formula = pattern.replace_all(&formula, replacement).to_string();
+                match crate::scanner::scan(&new_formula) {
+                    Ok(tokens) => {
+                        self.putcont(x, y, z, tokens);
+                        return true;
+                    }
+                    Err(_) => return false,
+                }
+            }
+        }
+        false
     }
 
     /// Execute one clock tick: trigger → evaluate → commit

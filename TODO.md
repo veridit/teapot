@@ -45,6 +45,7 @@
 - [x] Multi-axis sort (:sort-x, :sort-y, :sort-z)
 - [x] Clocked cells — three-phase commit (C key, :clock, :clock-run)
 - [x] Command palette (/ or F1) with fuzzy filtering
+- [x] Search/replace with regex (n/N navigate, :search, :replace, y/n/a/q confirmation)
 
 ## Remaining Work
 
@@ -69,7 +70,7 @@
 
 ### Future Ideas
 - [ ] Undo descriptions (show what each undo step reverts)
-- [ ] Search/replace within cells
+- [x] Search/replace within cells
 - [ ] Conditional formatting
 - [ ] Charts (sparklines in terminal)
 - [ ] Lua/Rhai scripting extension

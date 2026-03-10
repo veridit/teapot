@@ -13,6 +13,8 @@ use ratatui::{
     Frame, Terminal,
 };
 
+use regex::Regex;
+
 use crate::scanner;
 use crate::sheet::Sheet;
 use crate::token::Token;
@@ -29,6 +31,8 @@ const COMMANDS: &[&str] = &[
     "sheet", "sheet-add", "sheet-del", "sheets",
     "clock", "clock-run",
     "save-text",
+    "search", "s", "search-all", "search-formula",
+    "replace", "r", "replace-all",
 ];
 
 struct DisplayState {
@@ -59,7 +63,22 @@ struct DisplayState {
     palette_active: bool,
     palette_filter: String,
     palette_selection: usize,
+    // Search/replace
+    search_active: bool,
+    search_pattern: String,
+    search_results: Vec<(usize, usize, usize)>,
+    search_index: usize,
+    search_in_values: bool,
+    search_regex: bool,
+    replace_active: bool,
+    replace_pattern: String,
+    search_field: SearchField,
+    replace_confirm: bool,
+    search_all_layers: bool,
 }
+
+#[derive(PartialEq, Clone, Copy)]
+enum SearchField { Search, Replace }
 
 #[derive(PartialEq)]
 enum InputMode {
@@ -93,6 +112,17 @@ impl Default for DisplayState {
             palette_active: false,
             palette_filter: String::new(),
             palette_selection: 0,
+            search_active: false,
+            search_pattern: String::new(),
+            search_results: Vec::new(),
+            search_index: 0,
+            search_in_values: true,
+            search_regex: true,
+            replace_active: false,
+            replace_pattern: String::new(),
+            search_field: SearchField::Search,
+            replace_confirm: false,
+            search_all_layers: false,
         }
     }
 }
@@ -352,6 +382,16 @@ fn run_app(
         })?;
 
         if let Event::Key(key) = event::read()? {
+            // Handle search overlay first
+            if state.search_active {
+                handle_search(key, sheet, state);
+                continue;
+            }
+            // Handle replace confirmation
+            if state.replace_confirm {
+                handle_replace_confirm(key, sheet, state);
+                continue;
+            }
             // Handle palette mode first (overlays everything)
             if state.palette_active {
                 handle_palette(key, sheet, state);
@@ -498,6 +538,45 @@ fn handle_normal(key: crossterm::event::KeyEvent, sheet: &mut Sheet, state: &mut
             // Sheet picker
             state.sheet_picker_active = true;
             state.sheet_picker_selection = sheet.cur_z;
+        }
+        // Search
+        KeyCode::Char('n') if !state.search_results.is_empty() => {
+            if state.search_results.len() > 1 {
+                state.search_index = (state.search_index + 1) % state.search_results.len();
+            }
+            let (x, y, z) = state.search_results[state.search_index];
+            sheet.cur_x = x;
+            sheet.cur_y = y;
+            sheet.cur_z = z;
+            state.status_message = format!("Match {}/{}", state.search_index + 1, state.search_results.len());
+        }
+        KeyCode::Char('n') => {
+            // Open search bar
+            state.search_active = true;
+            state.search_field = SearchField::Search;
+            state.replace_active = false;
+            state.search_pattern.clear();
+            state.search_results.clear();
+            state.search_index = 0;
+        }
+        KeyCode::Char('N') => {
+            if !state.search_results.is_empty() {
+                if state.search_index == 0 {
+                    state.search_index = state.search_results.len() - 1;
+                } else {
+                    state.search_index -= 1;
+                }
+                let (x, y, z) = state.search_results[state.search_index];
+                sheet.cur_x = x;
+                sheet.cur_y = y;
+                sheet.cur_z = z;
+                state.status_message = format!("Match {}/{}", state.search_index + 1, state.search_results.len());
+            }
+        }
+        KeyCode::Esc => {
+            // Clear search results
+            state.search_results.clear();
+            state.search_index = 0;
         }
         KeyCode::Char('?') => {
             state.input_mode = InputMode::Help;
@@ -798,6 +877,208 @@ fn handle_sheet_picker(key: crossterm::event::KeyEvent, sheet: &mut Sheet, state
     }
 }
 
+/// Run incremental search and update results
+fn update_search_results(sheet: &Sheet, state: &mut DisplayState) {
+    if state.search_pattern.is_empty() {
+        state.search_results.clear();
+        state.search_index = 0;
+        return;
+    }
+    let re = if state.search_regex {
+        match Regex::new(&state.search_pattern) {
+            Ok(r) => r,
+            Err(_) => {
+                // Fall back to literal match
+                match Regex::new(&regex::escape(&state.search_pattern)) {
+                    Ok(r) => r,
+                    Err(_) => return,
+                }
+            }
+        }
+    } else {
+        match Regex::new(&regex::escape(&state.search_pattern)) {
+            Ok(r) => r,
+            Err(_) => return,
+        }
+    };
+
+    state.search_results = if state.search_all_layers {
+        sheet.search_all_cells(&re, state.search_in_values)
+    } else {
+        sheet.search_cells(sheet.cur_z, &re, state.search_in_values)
+    };
+    if state.search_index >= state.search_results.len() {
+        state.search_index = 0;
+    }
+}
+
+fn handle_search(key: crossterm::event::KeyEvent, sheet: &mut Sheet, state: &mut DisplayState) {
+    match state.search_field {
+        SearchField::Search => {
+            match key.code {
+                KeyCode::Esc => {
+                    state.search_active = false;
+                    state.search_results.clear();
+                    state.search_index = 0;
+                }
+                KeyCode::Enter => {
+                    if !state.search_results.is_empty() {
+                        let (x, y, z) = state.search_results[state.search_index];
+                        sheet.cur_x = x;
+                        sheet.cur_y = y;
+                        sheet.cur_z = z;
+                        state.status_message = format!("Match {}/{}", state.search_index + 1, state.search_results.len());
+                        adjust_viewport(sheet, state.terminal_area);
+                    } else {
+                        state.status_message = String::from("No matches");
+                    }
+                    state.search_active = false;
+                }
+                KeyCode::Tab => {
+                    if state.replace_active {
+                        state.search_field = SearchField::Replace;
+                    }
+                }
+                KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    // Toggle search in values vs formulas
+                    state.search_in_values = !state.search_in_values;
+                    update_search_results(sheet, state);
+                    let what = if state.search_in_values { "values" } else { "formulas" };
+                    state.status_message = format!("Searching {}", what);
+                }
+                KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    // Toggle regex mode
+                    state.search_regex = !state.search_regex;
+                    update_search_results(sheet, state);
+                    let mode = if state.search_regex { "regex" } else { "literal" };
+                    state.status_message = format!("Search mode: {}", mode);
+                }
+                KeyCode::Backspace => {
+                    state.search_pattern.pop();
+                    update_search_results(sheet, state);
+                }
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    state.search_pattern.push(c);
+                    update_search_results(sheet, state);
+                }
+                _ => {}
+            }
+        }
+        SearchField::Replace => {
+            match key.code {
+                KeyCode::Esc => {
+                    state.search_active = false;
+                    state.search_results.clear();
+                    state.search_index = 0;
+                }
+                KeyCode::Tab | KeyCode::BackTab => {
+                    state.search_field = SearchField::Search;
+                }
+                KeyCode::Enter => {
+                    // Start replace confirmation
+                    if !state.search_results.is_empty() {
+                        let (x, y, z) = state.search_results[state.search_index];
+                        sheet.cur_x = x;
+                        sheet.cur_y = y;
+                        sheet.cur_z = z;
+                        adjust_viewport(sheet, state.terminal_area);
+                        state.search_active = false;
+                        state.replace_confirm = true;
+                        state.status_message = format!(
+                            "Replace? (y)es (n)o (a)ll (q)uit — Match {}/{}",
+                            state.search_index + 1, state.search_results.len()
+                        );
+                    } else {
+                        state.status_message = String::from("No matches to replace");
+                        state.search_active = false;
+                    }
+                }
+                KeyCode::Backspace => {
+                    state.replace_pattern.pop();
+                }
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    state.replace_pattern.push(c);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn handle_replace_confirm(key: crossterm::event::KeyEvent, sheet: &mut Sheet, state: &mut DisplayState) {
+    let re = if state.search_regex {
+        Regex::new(&state.search_pattern).unwrap_or_else(|_| Regex::new(&regex::escape(&state.search_pattern)).unwrap())
+    } else {
+        Regex::new(&regex::escape(&state.search_pattern)).unwrap()
+    };
+
+    match key.code {
+        KeyCode::Char('y') => {
+            sheet.save_undo();
+            let (x, y, z) = state.search_results[state.search_index];
+            sheet.replace_cell(x, y, z, &re, &state.replace_pattern, state.search_in_values);
+            sheet.update();
+            // Re-run search to refresh results
+            update_search_results(sheet, state);
+            if state.search_results.is_empty() {
+                state.replace_confirm = false;
+                state.status_message = String::from("All matches replaced");
+            } else {
+                if state.search_index >= state.search_results.len() {
+                    state.search_index = 0;
+                }
+                let (x, y, z) = state.search_results[state.search_index];
+                sheet.cur_x = x;
+                sheet.cur_y = y;
+                sheet.cur_z = z;
+                adjust_viewport(sheet, state.terminal_area);
+                state.status_message = format!(
+                    "Replaced. Next? (y/n/a/q) — Match {}/{}",
+                    state.search_index + 1, state.search_results.len()
+                );
+            }
+        }
+        KeyCode::Char('n') => {
+            // Skip this match
+            if state.search_results.len() > 1 {
+                state.search_index = (state.search_index + 1) % state.search_results.len();
+                let (x, y, z) = state.search_results[state.search_index];
+                sheet.cur_x = x;
+                sheet.cur_y = y;
+                sheet.cur_z = z;
+                adjust_viewport(sheet, state.terminal_area);
+                state.status_message = format!(
+                    "Replace? (y/n/a/q) — Match {}/{}",
+                    state.search_index + 1, state.search_results.len()
+                );
+            } else {
+                state.replace_confirm = false;
+                state.status_message = String::from("No more matches");
+            }
+        }
+        KeyCode::Char('a') => {
+            // Replace all
+            sheet.save_undo();
+            let mut count = 0;
+            for &(x, y, z) in &state.search_results {
+                if sheet.replace_cell(x, y, z, &re, &state.replace_pattern, state.search_in_values) {
+                    count += 1;
+                }
+            }
+            sheet.update();
+            state.search_results.clear();
+            state.search_index = 0;
+            state.replace_confirm = false;
+            state.status_message = format!("Replaced {} matches", count);
+        }
+        KeyCode::Char('q') | KeyCode::Esc => {
+            state.replace_confirm = false;
+            state.status_message = String::from("Replace cancelled");
+        }
+        _ => {}
+    }
+}
+
 fn handle_palette(key: crossterm::event::KeyEvent, sheet: &mut Sheet, state: &mut DisplayState) {
     let filtered = get_palette_items(&state.palette_filter);
     match key.code {
@@ -863,8 +1144,8 @@ fn save_by_extension(sheet: &Sheet, filename: &str) -> anyhow::Result<usize> {
 }
 
 fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
-    let cmd = state.input_buffer.trim_start_matches(':').trim();
-    let parts: Vec<&str> = cmd.splitn(2, ' ').collect();
+    let cmd_owned = state.input_buffer.trim_start_matches(':').trim().to_string();
+    let parts: Vec<&str> = cmd_owned.splitn(2, ' ').collect();
     let command = parts[0];
     let arg = parts.get(1).map(|s| s.trim()).unwrap_or("");
 
@@ -1329,11 +1610,159 @@ fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
             }
             state.status_message = format!("Clock run: {} total updates", total);
         }
+        "search" | "s" => {
+            if arg.is_empty() {
+                // Open interactive search
+                state.search_active = true;
+                state.search_field = SearchField::Search;
+                state.replace_active = false;
+                state.search_pattern.clear();
+                state.search_results.clear();
+                state.search_index = 0;
+                state.search_all_layers = false;
+            } else {
+                state.search_pattern = arg.to_string();
+                state.search_in_values = true;
+                state.search_all_layers = false;
+                update_search_results(sheet, state);
+                if !state.search_results.is_empty() {
+                    state.search_index = 0;
+                    let (x, y, z) = state.search_results[0];
+                    sheet.cur_x = x;
+                    sheet.cur_y = y;
+                    sheet.cur_z = z;
+                    state.status_message = format!("{} matches. n/N to navigate.", state.search_results.len());
+                } else {
+                    state.status_message = format!("No matches for '{}'", arg);
+                }
+            }
+        }
+        "search-all" => {
+            if arg.is_empty() {
+                state.search_active = true;
+                state.search_field = SearchField::Search;
+                state.replace_active = false;
+                state.search_pattern.clear();
+                state.search_results.clear();
+                state.search_index = 0;
+                state.search_all_layers = true;
+            } else {
+                state.search_pattern = arg.to_string();
+                state.search_in_values = true;
+                state.search_all_layers = true;
+                update_search_results(sheet, state);
+                if !state.search_results.is_empty() {
+                    state.search_index = 0;
+                    let (x, y, z) = state.search_results[0];
+                    sheet.cur_x = x;
+                    sheet.cur_y = y;
+                    sheet.cur_z = z;
+                    state.status_message = format!("{} matches across all sheets. n/N to navigate.", state.search_results.len());
+                } else {
+                    state.status_message = format!("No matches for '{}'", arg);
+                }
+            }
+        }
+        "search-formula" => {
+            if arg.is_empty() {
+                state.search_active = true;
+                state.search_field = SearchField::Search;
+                state.replace_active = false;
+                state.search_pattern.clear();
+                state.search_results.clear();
+                state.search_index = 0;
+                state.search_in_values = false;
+                state.search_all_layers = false;
+            } else {
+                state.search_pattern = arg.to_string();
+                state.search_in_values = false;
+                state.search_all_layers = false;
+                update_search_results(sheet, state);
+                if !state.search_results.is_empty() {
+                    state.search_index = 0;
+                    let (x, y, z) = state.search_results[0];
+                    sheet.cur_x = x;
+                    sheet.cur_y = y;
+                    sheet.cur_z = z;
+                    state.status_message = format!("{} formula matches. n/N to navigate.", state.search_results.len());
+                } else {
+                    state.status_message = format!("No formula matches for '{}'", arg);
+                }
+            }
+        }
+        "replace" | "r" => {
+            // :replace <search> <replace> or :r <search> <replace>
+            let rparts: Vec<&str> = arg.splitn(2, ' ').collect();
+            if rparts.len() == 2 {
+                state.search_pattern = rparts[0].to_string();
+                state.replace_pattern = rparts[1].to_string();
+                state.search_in_values = true;
+                state.search_all_layers = false;
+                update_search_results(sheet, state);
+                if !state.search_results.is_empty() {
+                    state.search_index = 0;
+                    let (x, y, z) = state.search_results[0];
+                    sheet.cur_x = x;
+                    sheet.cur_y = y;
+                    sheet.cur_z = z;
+                    state.replace_confirm = true;
+                    state.status_message = format!(
+                        "Replace? (y)es (n)o (a)ll (q)uit — Match 1/{}",
+                        state.search_results.len()
+                    );
+                } else {
+                    state.status_message = format!("No matches for '{}'", rparts[0]);
+                }
+            } else if arg.is_empty() {
+                // Open interactive search+replace
+                state.search_active = true;
+                state.search_field = SearchField::Search;
+                state.replace_active = true;
+                state.search_pattern.clear();
+                state.replace_pattern.clear();
+                state.search_results.clear();
+                state.search_index = 0;
+                state.search_all_layers = false;
+            } else {
+                state.status_message = String::from("Usage: :replace <search> <replacement>");
+            }
+        }
+        "replace-all" => {
+            let rparts: Vec<&str> = arg.splitn(2, ' ').collect();
+            if rparts.len() == 2 {
+                state.search_pattern = rparts[0].to_string();
+                state.replace_pattern = rparts[1].to_string();
+                state.search_in_values = true;
+                state.search_all_layers = false;
+                update_search_results(sheet, state);
+                if !state.search_results.is_empty() {
+                    let re = if state.search_regex {
+                        Regex::new(&state.search_pattern).unwrap_or_else(|_| Regex::new(&regex::escape(&state.search_pattern)).unwrap())
+                    } else {
+                        Regex::new(&regex::escape(&state.search_pattern)).unwrap()
+                    };
+                    sheet.save_undo();
+                    let mut count = 0;
+                    for &(x, y, z) in &state.search_results {
+                        if sheet.replace_cell(x, y, z, &re, &state.replace_pattern, state.search_in_values) {
+                            count += 1;
+                        }
+                    }
+                    sheet.update();
+                    state.search_results.clear();
+                    state.status_message = format!("Replaced {} matches", count);
+                } else {
+                    state.status_message = format!("No matches for '{}'", rparts[0]);
+                }
+            } else {
+                state.status_message = String::from("Usage: :replace-all <search> <replacement>");
+            }
+        }
         "help" => {
             state.input_mode = InputMode::Help;
         }
         _ => {
-            state.status_message = format!("Unknown command: {}", cmd);
+            state.status_message = format!("Unknown command: {}", cmd_owned);
         }
     }
 }
@@ -1385,12 +1814,65 @@ fn ui(f: &mut Frame, sheet: &Sheet, state: &DisplayState) {
     f.render_widget(status, chunks[2]);
 
     // Input bar
+    if state.search_active {
+        // Search bar replaces input line
+        let mode = if state.search_in_values { "val" } else { "formula" };
+        let re_mode = if state.search_regex { "re" } else { "lit" };
+        let count = state.search_results.len();
+        if state.replace_active {
+            let (search_style, replace_style) = if state.search_field == SearchField::Search {
+                (Style::default().fg(Color::Yellow), Style::default().fg(Color::White))
+            } else {
+                (Style::default().fg(Color::White), Style::default().fg(Color::Yellow))
+            };
+            let line = Line::from(vec![
+                Span::styled(format!("/{} ", re_mode), Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("search: {} ", state.search_pattern), search_style),
+                Span::styled(format!("→ replace: {} ", state.replace_pattern), replace_style),
+                Span::styled(format!("[{}] {}", mode, count), Style::default().fg(Color::DarkGray)),
+            ]);
+            let bar = Paragraph::new(line);
+            f.render_widget(bar, chunks[3]);
+            // Set cursor position
+            if state.search_field == SearchField::Search {
+                let prefix_len = re_mode.len() + 2 + "search: ".len();
+                f.set_cursor_position((
+                    chunks[3].x + prefix_len as u16 + state.search_pattern.len() as u16,
+                    chunks[3].y,
+                ));
+            } else {
+                let prefix_len = re_mode.len() + 2 + "search: ".len() + state.search_pattern.len() + " → replace: ".len();
+                f.set_cursor_position((
+                    chunks[3].x + prefix_len as u16 + state.replace_pattern.len() as u16,
+                    chunks[3].y,
+                ));
+            }
+        } else {
+            let line = Line::from(vec![
+                Span::styled(format!("/{} ", re_mode), Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("search: {}", state.search_pattern), Style::default().fg(Color::Yellow)),
+                Span::styled(format!("  [{}] {}", mode, count), Style::default().fg(Color::DarkGray)),
+            ]);
+            let bar = Paragraph::new(line);
+            f.render_widget(bar, chunks[3]);
+            let prefix_len = re_mode.len() + 2 + "search: ".len();
+            f.set_cursor_position((
+                chunks[3].x + prefix_len as u16 + state.search_pattern.len() as u16,
+                chunks[3].y,
+            ));
+        }
+    } else if state.replace_confirm {
+        let msg = &state.status_message;
+        let bar = Paragraph::new(msg.as_str())
+            .style(Style::default().fg(Color::Yellow).bg(Color::DarkGray));
+        f.render_widget(bar, chunks[3]);
+    } else {
     match state.input_mode {
         InputMode::Normal => {
             let help_text = if state.palette_active || state.sheet_picker_active || state.picker_active {
                 " Use arrow keys to navigate, Enter to select, Esc to cancel"
             } else {
-                " hjkl: move | =/': formula/text | 0-9: number | :: command | /: palette | ?: help"
+                " hjkl: move | =/': formula/text | 0-9: number | :: command | /: palette | n: search | ?: help"
             };
             let help = Paragraph::new(help_text)
                 .style(Style::default().fg(Color::DarkGray));
@@ -1421,6 +1903,7 @@ fn ui(f: &mut Frame, sheet: &Sheet, state: &DisplayState) {
                 .style(Style::default().fg(Color::DarkGray));
             f.render_widget(help, chunks[3]);
         }
+    }
     }
 
     // Render overlays
@@ -1455,7 +1938,8 @@ fn render_help(f: &mut Frame, area: Rect) {
     Delete        Clear current cell   u   Clear mark
     y             Yank (copy) block    p   Paste at cursor
     Ctrl+Z        Undo                 Ctrl+Y  Redo
-    Esc           Cancel editing       C   Clock tick
+    Esc           Cancel / clear search  C  Clock tick
+    n             Search / next match  N   Previous match
 
   Edit mode keys
     Left/Right    Move cursor          Home/End  Jump to start/end
@@ -1478,6 +1962,9 @@ fn render_help(f: &mut Frame, area: Rect) {
     :mirror-x/y/z Mirror block          :fill c r [l]  Tile block
     :sheet N      Switch to sheet N     :sheet-add/:sheet-del
     :clock        Toggle cell clock     :clock-run Run clock
+    :search <pat> Search current sheet  :s <pat>   Alias for search
+    :search-all   Search all sheets     :search-formula  Search formulas
+    :replace <s> <r>  Replace with confirmation  :replace-all <s> <r>
     :export-text  Export as plain text  :export-csv   Export as CSV
     :export-html  Export as HTML        :export-latex Export as LaTeX
     :export-context  Export as ConTeXt  :help         Show this help
@@ -1551,10 +2038,21 @@ fn render_sheet(f: &mut Frame, sheet: &Sheet, state: &DisplayState, area: Rect) 
             let in_mark = sheet.get_mark_range().is_some_and(|(x1, y1, z1, x2, y2, z2)|
                 x >= x1 && x <= x2 && y >= y1 && y <= y2 && z >= z1 && z <= z2);
             let is_picker = state.picker_active && x == state.picker_x && y == state.picker_y && z == state.picker_z;
+            let search_match_idx = state.search_results.iter().position(|&(sx, sy, sz)| sx == x && sy == y && sz == z);
+            let is_current_match = search_match_idx == Some(state.search_index) && !state.search_results.is_empty();
+            let is_any_match = search_match_idx.is_some();
             let style = if is_picker {
                 Style::default().fg(Color::Black).bg(Color::Green)
             } else if x == sheet.cur_x && y == sheet.cur_y {
-                Style::default().fg(Color::Black).bg(Color::White)
+                if is_current_match {
+                    Style::default().fg(Color::Black).bg(Color::LightYellow)
+                } else {
+                    Style::default().fg(Color::Black).bg(Color::White)
+                }
+            } else if is_current_match {
+                Style::default().fg(Color::Black).bg(Color::LightYellow)
+            } else if is_any_match {
+                Style::default().fg(Color::Black).bg(Color::Yellow)
             } else if in_mark {
                 Style::default().fg(Color::Black).bg(Color::Cyan)
             } else {
