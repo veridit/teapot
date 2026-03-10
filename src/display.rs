@@ -345,6 +345,17 @@ fn run_app(
     }
 }
 
+/// Save a sheet using the appropriate format based on file extension
+fn save_by_extension(sheet: &Sheet, filename: &str) -> anyhow::Result<usize> {
+    if filename.ends_with(".tpz") {
+        crate::fileio::save_tpz(sheet, filename)
+    } else if filename.ends_with(".xlsx") {
+        crate::fileio::xlsx::save_xlsx(sheet, filename)
+    } else {
+        crate::fileio::save_port(sheet, filename)
+    }
+}
+
 fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
     let cmd = state.input_buffer.trim_start_matches(':').trim();
     let parts: Vec<&str> = cmd.splitn(2, ' ').collect();
@@ -364,7 +375,7 @@ fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
         }
         "wq" => {
             let filename = sheet.name.clone().unwrap_or_else(|| "sheet.tpa".to_string());
-            match crate::fileio::save_port(sheet, &filename) {
+            match save_by_extension(sheet, &filename) {
                 Ok(count) => {
                     sheet.name = Some(filename.clone());
                     sheet.changed = false;
@@ -382,7 +393,7 @@ fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
             } else {
                 arg.to_string()
             };
-            match crate::fileio::save_port(sheet, &filename) {
+            match save_by_extension(sheet, &filename) {
                 Ok(count) => {
                     sheet.name = Some(filename.clone());
                     sheet.changed = false;
@@ -685,7 +696,7 @@ fn render_help(f: &mut Frame, area: Rect) {
     Esc           Cancel editing
 
   Commands (press : to enter command mode)
-    :w [file]     Save (.tpa format)    :o <file>  Open file
+    :w [file]     Save (.tpa/.tpz/.xlsx) :o <file>  Open file
     :q            Quit                  :q!        Force quit
     :wq           Save and quit         :goto x,y  Move to cell
     :width N      Set column width      :align l/r/c/a

@@ -1,6 +1,9 @@
 use anyhow::{bail, Result};
+use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read as _, Write};
 
 use crate::scanner;
 use crate::sheet::{Adjust, Sheet};
@@ -11,6 +14,8 @@ pub mod latex;
 pub mod context;
 pub mod sc;
 pub mod wk1;
+pub mod calamine_import;
+pub mod xlsx;
 
 /// Load a sheet from an XDR file
 pub fn load_xdr(_sheet: &mut Sheet, _filename: &str) -> Result<()> {
@@ -344,23 +349,154 @@ pub use context::save_context;
 pub use sc::load_sc;
 pub use wk1::load_wk1;
 
+/// Save a sheet to a gzip-compressed portable ASCII file (.tpz)
+pub fn save_tpz(sheet: &Sheet, filename: &str) -> Result<usize> {
+    let file = fs::File::create(filename)?;
+    let mut encoder = GzEncoder::new(file, Compression::default());
+    let mut count = 0;
+
+    writeln!(encoder, "# This is a work sheet generated with teapot 2.3.0.")?;
+
+    // Write column widths
+    for z in 0..sheet.dim_z {
+        for x in 0..sheet.dim_x {
+            let w = sheet.column_width(x, z);
+            if w != sheet.width {
+                writeln!(encoder, "W{} {} {}", x, z, w)?;
+            }
+        }
+    }
+
+    // Write cells (same format as save_port)
+    for z in 0..sheet.dim_z {
+        for y in 0..sheet.dim_y {
+            for x in 0..sheet.dim_x {
+                if let Some(cell) = sheet.get_cell(x, y, z) {
+                    let has_content = cell.contents.is_some()
+                        || cell.label.is_some()
+                        || cell.adjust != Adjust::AutoAdjust
+                        || cell.shadowed || cell.bold || cell.underline
+                        || cell.scientific || cell.locked || cell.transparent
+                        || cell.ignored
+                        || cell.precision != -1;
+                    if !has_content {
+                        continue;
+                    }
+
+                    write!(encoder, "C{} {} {} ", x, y, z)?;
+
+                    match cell.adjust {
+                        Adjust::Left => write!(encoder, "Al ")?,
+                        Adjust::Right => write!(encoder, "Ar ")?,
+                        Adjust::Center => write!(encoder, "Ac ")?,
+                        Adjust::AutoAdjust => {}
+                    }
+                    if let Some(ref label) = cell.label {
+                        write!(encoder, "L{} ", label)?;
+                    }
+                    if cell.precision != -1 {
+                        write!(encoder, "P{} ", cell.precision)?;
+                    }
+                    if cell.shadowed { write!(encoder, "S ")?; }
+                    if cell.bold { write!(encoder, "B ")?; }
+                    if cell.underline { write!(encoder, "U ")?; }
+                    if cell.scientific { write!(encoder, "E ")?; }
+                    if cell.locked { write!(encoder, "C ")?; }
+                    if cell.transparent { write!(encoder, "T ")?; }
+                    if cell.ignored { write!(encoder, "I ")?; }
+
+                    if let Some(ref contents) = cell.contents {
+                        let expr = scanner::print_tokens(contents, true, cell.scientific, cell.precision);
+                        write!(encoder, ":{}", expr)?;
+                    }
+
+                    if let Some(ref ccontents) = cell.clocked_contents {
+                        let expr = scanner::print_tokens(ccontents, true, cell.scientific, cell.precision);
+                        write!(encoder, "\\\n{}", expr)?;
+                    }
+
+                    writeln!(encoder)?;
+                    count += 1;
+                }
+            }
+        }
+    }
+
+    encoder.finish()?;
+    Ok(count)
+}
+
+/// Load a sheet from a gzip-compressed portable ASCII file (.tpz)
+pub fn load_tpz(sheet: &mut Sheet, filename: &str) -> Result<()> {
+    let file = fs::File::open(filename)?;
+    let decoder = GzDecoder::new(file);
+    let reader = BufReader::new(decoder);
+    let mut line_num = 0;
+
+    for line_result in reader.lines() {
+        let line = line_result?;
+        line_num += 1;
+
+        if line.is_empty() {
+            continue;
+        }
+
+        match line.as_bytes()[0] {
+            b'#' => { /* comment, skip */ }
+            b'W' => parse_width_line(&line[1..], sheet, line_num)?,
+            b'C' => parse_cell_line(&line[1..], sheet, line_num)?,
+            c => bail!("Unknown tag '{}' in line {}", c as char, line_num),
+        }
+    }
+
+    sheet.changed = false;
+    sheet.cachelabels();
+    sheet.update();
+    Ok(())
+}
+
+/// Detect if a file is gzip-compressed by checking magic bytes
+fn is_gzip(filename: &str) -> bool {
+    fs::File::open(filename)
+        .and_then(|mut f| {
+            let mut buf = [0u8; 2];
+            f.read_exact(&mut buf)?;
+            Ok(buf[0] == 0x1f && buf[1] == 0x8b)
+        })
+        .unwrap_or(false)
+}
+
 /// Load a file based on its extension
 pub fn load_file(sheet: &mut Sheet, path: &std::path::Path, use_xdr: bool) -> Result<()> {
     let filename = path.to_str().unwrap_or("");
     if let Some(extension) = path.extension().and_then(|e| e.to_str()) {
         match extension.to_lowercase().as_str() {
-            "tpa" => load_port(sheet, filename)?,
+            "tpz" => load_tpz(sheet, filename)?,
+            "tpa" => {
+                // Auto-detect gzip on .tpa files
+                if is_gzip(filename) {
+                    load_tpz(sheet, filename)?;
+                } else {
+                    load_port(sheet, filename)?;
+                }
+            }
             "sc" => load_sc(sheet, filename)?,
             "wk1" => load_wk1(sheet, filename)?,
             "csv" => load_csv(sheet, filename)?,
+            "xlsx" | "xls" | "ods" => calamine_import::load_spreadsheet(sheet, filename)?,
             _ => {
-                if use_xdr {
+                // Try gzip detection, fall back to tpa
+                if is_gzip(filename) {
+                    load_tpz(sheet, filename)?;
+                } else if use_xdr {
                     load_xdr(sheet, filename)?;
                 } else {
                     load_port(sheet, filename)?;
                 }
             }
         }
+    } else if is_gzip(filename) {
+        load_tpz(sheet, filename)?;
     } else if use_xdr {
         load_xdr(sheet, filename)?;
     } else {
