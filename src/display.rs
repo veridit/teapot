@@ -70,11 +70,32 @@ pub fn display_main(sheet: &mut Sheet) {
     }
 }
 
+/// Number of data rows visible in the terminal area
+fn visible_rows(area: Rect) -> usize {
+    // tabs (1) + table borders (2) + header row (1) + status (1) + input (1) = 6
+    (area.height as usize).saturating_sub(6).max(1)
+}
+
+/// Number of data columns visible in the terminal area
+fn visible_cols(sheet: &Sheet, area: Rect) -> usize {
+    let row_num_width = 4u16;
+    let mut used = row_num_width;
+    let mut count = 0;
+    for x in sheet.off_x..sheet.off_x + 100 {
+        let w = sheet.column_width(x, sheet.cur_z) as u16;
+        if used + w + 1 > area.width {
+            break;
+        }
+        used += w + 1;
+        count += 1;
+    }
+    count.max(1)
+}
+
 /// Adjust viewport offset so the cursor stays visible on screen
 fn adjust_viewport(sheet: &mut Sheet, area: Rect) {
     let row_num_width = 4u16;
-    // Account for: tabs (1) + table borders (2) + header row (1) + status (1) + input (1) = 6
-    let visible_rows = (area.height as usize).saturating_sub(6);
+    let visible_rows = visible_rows(area);
 
     // Vertical scrolling
     if sheet.cur_y < sheet.off_y {
@@ -150,17 +171,33 @@ fn run_app(
                             state.input_buffer.push(':');
                             state.cursor_position = 1;
                         }
-                        KeyCode::Up => {
+                        KeyCode::Char('k') | KeyCode::Up => {
                             if sheet.cur_y > 0 { sheet.cur_y -= 1; }
                         }
-                        KeyCode::Down => {
+                        KeyCode::Char('j') | KeyCode::Down => {
                             sheet.cur_y += 1;
                         }
-                        KeyCode::Left => {
+                        KeyCode::Char('h') | KeyCode::Left => {
                             if sheet.cur_x > 0 { sheet.cur_x -= 1; }
                         }
-                        KeyCode::Right => {
+                        KeyCode::Char('l') | KeyCode::Right => {
                             sheet.cur_x += 1;
+                        }
+                        KeyCode::Char('K') => {
+                            let page = visible_rows(state.terminal_area);
+                            sheet.cur_y = sheet.cur_y.saturating_sub(page);
+                        }
+                        KeyCode::Char('J') => {
+                            let page = visible_rows(state.terminal_area);
+                            sheet.cur_y += page;
+                        }
+                        KeyCode::Char('H') => {
+                            let page = visible_cols(sheet, state.terminal_area);
+                            sheet.cur_x = sheet.cur_x.saturating_sub(page);
+                        }
+                        KeyCode::Char('L') => {
+                            let page = visible_cols(sheet, state.terminal_area);
+                            sheet.cur_x += page;
                         }
                         KeyCode::Tab => {
                             if sheet.cur_z + 1 < sheet.dim_z {
@@ -356,7 +393,7 @@ fn ui(f: &mut Frame, sheet: &Sheet, state: &DisplayState) {
     // Input bar
     match state.input_mode {
         InputMode::Normal => {
-            let help = Paragraph::new(" e/Enter: edit | :: command | Ctrl+Q: quit | Del: clear")
+            let help = Paragraph::new(" hjkl: move | HJKL: page | e/Enter: edit | :: command | Ctrl+Q: quit")
                 .style(Style::default().fg(Color::DarkGray));
             f.render_widget(help, chunks[3]);
         }
