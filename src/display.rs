@@ -29,6 +29,7 @@ enum InputMode {
     Normal,
     Editing,
     Command,
+    Help,
 }
 
 impl Default for DisplayState {
@@ -206,6 +207,9 @@ fn run_app(
                                 sheet.cur_z = 0;
                             }
                         }
+                        KeyCode::Char('?') => {
+                            state.input_mode = InputMode::Help;
+                        }
                         KeyCode::Delete => {
                             // Clear current cell
                             let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
@@ -269,7 +273,9 @@ fn run_app(
                     match key.code {
                         KeyCode::Enter => {
                             process_command(sheet, state);
-                            state.input_mode = InputMode::Normal;
+                            if !matches!(state.input_mode, InputMode::Help) {
+                                state.input_mode = InputMode::Normal;
+                            }
                         }
                         KeyCode::Esc => {
                             state.input_mode = InputMode::Normal;
@@ -286,6 +292,10 @@ fn run_app(
                         }
                         _ => {}
                     }
+                }
+                InputMode::Help => {
+                    // Any key exits help
+                    state.input_mode = InputMode::Normal;
                 }
             }
         }
@@ -342,6 +352,9 @@ fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
                 }
             }
         }
+        "help" => {
+            state.input_mode = InputMode::Help;
+        }
         _ => {
             state.status_message = format!("Unknown command: {}", cmd);
         }
@@ -374,8 +387,12 @@ fn ui(f: &mut Frame, sheet: &Sheet, state: &DisplayState) {
     let tabs = Tabs::new(tab_titles).select(sheet.cur_z);
     f.render_widget(tabs, chunks[0]);
 
-    // Spreadsheet
-    render_sheet(f, sheet, chunks[1]);
+    // Spreadsheet or Help
+    if matches!(state.input_mode, InputMode::Help) {
+        render_help(f, chunks[1]);
+    } else {
+        render_sheet(f, sheet, chunks[1]);
+    }
 
     // Status bar: show cell info
     let cell_info = if let Some(cell) = sheet.get_cell(sheet.cur_x, sheet.cur_y, sheet.cur_z) {
@@ -415,7 +432,49 @@ fn ui(f: &mut Frame, sheet: &Sheet, state: &DisplayState) {
                 chunks[3].y,
             ));
         }
+        InputMode::Help => {
+            let help = Paragraph::new(" Press any key to return")
+                .style(Style::default().fg(Color::DarkGray));
+            f.render_widget(help, chunks[3]);
+        }
     }
+}
+
+fn render_help(f: &mut Frame, area: Rect) {
+    let help_text = "\
+  Teapot — Table Editor And Planner
+
+  Navigation
+    h / Left      Move left           H   Page left
+    j / Down      Move down           J   Page down
+    k / Up        Move up             K   Page up
+    l / Right     Move right          L   Page right
+    Tab           Next sheet
+
+  Editing
+    e / Enter     Edit cell (enter formula or value)
+    Delete        Clear current cell
+    Esc           Cancel editing
+
+  Commands (press : to enter command mode)
+    :w [file]     Save (.tpa format)
+    :goto x,y[,z] Move to cell
+    :help         Show this help
+    :q            Quit hint (use Ctrl+Q)
+
+  Formulas
+    Numbers       42, 3.14
+    Strings       \"hello\"
+    Arithmetic    1+2, 3*4, 2^10
+    Cell ref      @(x,y,z)
+    Functions     sum, min, max, abs, sin, cos, len, substr, ...
+
+  Press any key to return";
+
+    let help = Paragraph::new(help_text)
+        .block(Block::default().borders(Borders::ALL).title("Help"))
+        .style(Style::default().fg(Color::White));
+    f.render_widget(help, area);
 }
 
 fn render_sheet(f: &mut Frame, sheet: &Sheet, area: Rect) {
