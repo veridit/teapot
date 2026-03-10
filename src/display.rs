@@ -17,7 +17,7 @@ use regex::Regex;
 
 use crate::scanner;
 use crate::sheet::Sheet;
-use crate::token::Token;
+use crate::token::{Token, Operator};
 
 /// All known commands for completion and palette
 const COMMANDS: &[&str] = &[
@@ -75,6 +75,14 @@ struct DisplayState {
     search_field: SearchField,
     replace_confirm: bool,
     search_all_layers: bool,
+    // Go-to-ref state: origin cell and refs for cycling with g
+    goto_ref_origin: Option<(usize, usize, usize)>,
+    goto_ref_list: Vec<(usize, usize, usize)>,
+    goto_ref_index: usize,
+    // Dependents state: origin cell and deps for cycling with d
+    goto_dep_origin: Option<(usize, usize, usize)>,
+    goto_dep_list: Vec<(usize, usize, usize)>,
+    goto_dep_index: usize,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -123,6 +131,12 @@ impl Default for DisplayState {
             search_field: SearchField::Search,
             replace_confirm: false,
             search_all_layers: false,
+            goto_ref_origin: None,
+            goto_ref_list: Vec::new(),
+            goto_ref_index: 0,
+            goto_dep_origin: None,
+            goto_dep_list: Vec::new(),
+            goto_dep_index: 0,
         }
     }
 }
@@ -424,6 +438,18 @@ fn run_app(
 }
 
 fn handle_normal(key: crossterm::event::KeyEvent, sheet: &mut Sheet, state: &mut DisplayState) {
+    // Clear goto-ref cycle on any key other than g
+    if key.code != KeyCode::Char('g') && state.goto_ref_origin.is_some() {
+        state.goto_ref_origin = None;
+        state.goto_ref_list.clear();
+        state.goto_ref_index = 0;
+    }
+    // Clear goto-dep cycle on any key other than d
+    if key.code != KeyCode::Char('d') && state.goto_dep_origin.is_some() {
+        state.goto_dep_origin = None;
+        state.goto_dep_list.clear();
+        state.goto_dep_index = 0;
+    }
     match key.code {
         KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.should_quit = true;
@@ -571,6 +597,113 @@ fn handle_normal(key: crossterm::event::KeyEvent, sheet: &mut Sheet, state: &mut
                 sheet.cur_y = y;
                 sheet.cur_z = z;
                 state.status_message = format!("Match {}/{}", state.search_index + 1, state.search_results.len());
+            }
+        }
+        KeyCode::Char('r') => {
+            // Open search+replace
+            state.search_active = true;
+            state.search_field = SearchField::Search;
+            state.replace_active = true;
+            state.search_pattern.clear();
+            state.replace_pattern.clear();
+            state.search_results.clear();
+            state.search_index = 0;
+        }
+        KeyCode::Char('g') => {
+            let cur = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
+            // If we're already cycling refs from a previous g press, advance
+            if state.goto_ref_origin.is_some() && !state.goto_ref_list.is_empty() {
+                // Check if we're still on one of the refs or the origin
+                let on_ref = state.goto_ref_list.contains(&cur);
+                let on_origin = state.goto_ref_origin == Some(cur);
+                if on_ref || on_origin {
+                    state.goto_ref_index = (state.goto_ref_index + 1) % (state.goto_ref_list.len() + 1);
+                    if state.goto_ref_index == state.goto_ref_list.len() {
+                        // Cycle back to origin
+                        let (ox, oy, oz) = state.goto_ref_origin.unwrap();
+                        sheet.cur_x = ox;
+                        sheet.cur_y = oy;
+                        sheet.cur_z = oz;
+                        state.status_message = format!("Back to origin ({},{},{})", ox, oy, oz);
+                    } else {
+                        let (x, y, z) = state.goto_ref_list[state.goto_ref_index];
+                        sheet.cur_x = x;
+                        sheet.cur_y = y;
+                        sheet.cur_z = z;
+                        state.status_message = format!("Ref {}/{}: @({},{},{})",
+                            state.goto_ref_index + 1, state.goto_ref_list.len(), x, y, z);
+                    }
+                } else {
+                    // Moved away, start fresh from current cell
+                    state.goto_ref_origin = None;
+                    state.goto_ref_list.clear();
+                }
+            }
+            // Start fresh if no active cycle
+            if state.goto_ref_origin.is_none() {
+                let refs = sheet
+                    .get_cell(sheet.cur_x, sheet.cur_y, sheet.cur_z)
+                    .and_then(|c| c.contents.as_ref())
+                    .map(|tokens| extract_cell_refs(tokens))
+                    .unwrap_or_default();
+                if refs.is_empty() {
+                    state.status_message = String::from("No cell references in current cell");
+                } else {
+                    state.goto_ref_origin = Some(cur);
+                    state.goto_ref_list = refs;
+                    state.goto_ref_index = 0;
+                    let (x, y, z) = state.goto_ref_list[0];
+                    sheet.cur_x = x;
+                    sheet.cur_y = y;
+                    sheet.cur_z = z;
+                    state.status_message = format!("Ref 1/{}: @({},{},{})",
+                        state.goto_ref_list.len(), x, y, z);
+                }
+            }
+        }
+        KeyCode::Char('d') => {
+            let cur = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
+            // If already cycling deps, advance
+            if state.goto_dep_origin.is_some() && !state.goto_dep_list.is_empty() {
+                let on_dep = state.goto_dep_list.contains(&cur);
+                let on_origin = state.goto_dep_origin == Some(cur);
+                if on_dep || on_origin {
+                    state.goto_dep_index = (state.goto_dep_index + 1) % (state.goto_dep_list.len() + 1);
+                    if state.goto_dep_index == state.goto_dep_list.len() {
+                        let (ox, oy, oz) = state.goto_dep_origin.unwrap();
+                        sheet.cur_x = ox;
+                        sheet.cur_y = oy;
+                        sheet.cur_z = oz;
+                        state.status_message = format!("Back to origin ({},{},{})", ox, oy, oz);
+                    } else {
+                        let (x, y, z) = state.goto_dep_list[state.goto_dep_index];
+                        sheet.cur_x = x;
+                        sheet.cur_y = y;
+                        sheet.cur_z = z;
+                        state.status_message = format!("Dep {}/{}: ({},{},{})",
+                            state.goto_dep_index + 1, state.goto_dep_list.len(), x, y, z);
+                    }
+                } else {
+                    state.goto_dep_origin = None;
+                    state.goto_dep_list.clear();
+                }
+            }
+            // Start fresh if no active cycle
+            if state.goto_dep_origin.is_none() {
+                let deps = find_dependents(sheet, sheet.cur_x, sheet.cur_y, sheet.cur_z);
+                if deps.is_empty() {
+                    state.status_message = String::from("No cells depend on this cell");
+                } else {
+                    state.goto_dep_origin = Some(cur);
+                    state.goto_dep_list = deps;
+                    state.goto_dep_index = 0;
+                    let (x, y, z) = state.goto_dep_list[0];
+                    sheet.cur_x = x;
+                    sheet.cur_y = y;
+                    sheet.cur_z = z;
+                    state.status_message = format!("Dep 1/{}: ({},{},{})",
+                        state.goto_dep_list.len(), x, y, z);
+                }
             }
         }
         KeyCode::Esc => {
@@ -1800,17 +1933,54 @@ fn ui(f: &mut Frame, sheet: &Sheet, state: &DisplayState) {
         render_sheet(f, sheet, state, chunks[1]);
     }
 
-    // Status bar: show cell info
-    let cell_info = if let Some(cell) = sheet.get_cell(sheet.cur_x, sheet.cur_y, sheet.cur_z) {
-        let formula = cell.contents.as_ref()
-            .map(|c| scanner::print_tokens(c, true, cell.scientific, cell.precision))
-            .unwrap_or_default();
-        format!("({},{},{}) {} | {}", sheet.cur_x, sheet.cur_y, sheet.cur_z, formula, state.status_message)
+    // Status bar: show cell info with colored cell references
+    // When cycling refs with g, show the origin cell's formula instead
+    let (status_cell_x, status_cell_y, status_cell_z) = state.goto_ref_origin
+        .unwrap_or((sheet.cur_x, sheet.cur_y, sheet.cur_z));
+    let coord_str = format!("({},{},{}) ", sheet.cur_x, sheet.cur_y, sheet.cur_z);
+    let base_style = Style::default().fg(Color::White).bg(Color::Blue);
+    let status_spans = if let Some(cell) = sheet.get_cell(status_cell_x, status_cell_y, status_cell_z) {
+        if let Some(ref contents) = cell.contents {
+            let refs = extract_cell_refs(contents);
+            let formula = scanner::print_tokens(contents, true, cell.scientific, cell.precision);
+            let mut spans = vec![Span::styled(coord_str, base_style)];
+            // Color cell references in the formula string
+            let mut remaining = formula.as_str();
+            for (ri, &(rx, ry, rz)) in refs.iter().enumerate() {
+                let ref_str = format!("@({},{},{})", rx, ry, rz);
+                if let Some(pos) = remaining.find(&ref_str) {
+                    if pos > 0 {
+                        spans.push(Span::styled(remaining[..pos].to_string(), base_style));
+                    }
+                    let color = REF_COLORS[ri % REF_COLORS.len()];
+                    spans.push(Span::styled(
+                        ref_str.clone(),
+                        Style::default().fg(color).bg(Color::Blue).add_modifier(Modifier::BOLD),
+                    ));
+                    remaining = &remaining[pos + ref_str.len()..];
+                } else {
+                    // Reference not found literally (e.g. uses expressions), skip coloring
+                }
+            }
+            if !remaining.is_empty() {
+                spans.push(Span::styled(remaining.to_string(), base_style));
+            }
+            spans.push(Span::styled(format!(" | {}", state.status_message), base_style));
+            spans
+        } else {
+            vec![
+                Span::styled(coord_str, base_style),
+                Span::styled(format!("| {}", state.status_message), base_style),
+            ]
+        }
     } else {
-        format!("({},{},{}) | {}", sheet.cur_x, sheet.cur_y, sheet.cur_z, state.status_message)
+        vec![
+            Span::styled(coord_str, base_style),
+            Span::styled(format!("| {}", state.status_message), base_style),
+        ]
     };
-    let status = Paragraph::new(cell_info)
-        .style(Style::default().fg(Color::White).bg(Color::Blue));
+    let status = Paragraph::new(Line::from(status_spans))
+        .style(base_style);
     f.render_widget(status, chunks[2]);
 
     // Input bar
@@ -1940,6 +2110,8 @@ fn render_help(f: &mut Frame, area: Rect) {
     Ctrl+Z        Undo                 Ctrl+Y  Redo
     Esc           Cancel / clear search  C  Clock tick
     n             Search / next match  N   Previous match
+    r             Search and replace   g   Go to cell reference (cycle)
+    d             Go to dependent cell (cycle)
 
   Edit mode keys
     Left/Right    Move cursor          Home/End  Jump to start/end
@@ -1984,6 +2156,74 @@ fn render_help(f: &mut Frame, area: Rect) {
     f.render_widget(help, area);
 }
 
+/// A palette of distinct colors for highlighting cell references
+const REF_COLORS: &[Color] = &[
+    Color::LightBlue,
+    Color::LightMagenta,
+    Color::LightGreen,
+    Color::LightRed,
+    Color::LightCyan,
+    Color::Rgb(255, 165, 0), // orange
+];
+
+/// Extract static cell references from a token list.
+/// Returns coordinates for `@(x,y,z)` calls with literal integer args.
+fn extract_cell_refs(tokens: &[Token]) -> Vec<(usize, usize, usize)> {
+    let mut refs = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        if let Token::Identifier(name) = &tokens[i] {
+            if name == "@"
+                && i + 7 < tokens.len()
+                && tokens[i + 1] == Token::Operator(Operator::OpenParen)
+                && tokens[i + 3] == Token::Operator(Operator::Comma)
+                && tokens[i + 5] == Token::Operator(Operator::Comma)
+                && tokens[i + 7] == Token::Operator(Operator::CloseParen)
+            {
+                if let (Some(x), Some(y), Some(z)) = (
+                    token_to_usize(&tokens[i + 2]),
+                    token_to_usize(&tokens[i + 4]),
+                    token_to_usize(&tokens[i + 6]),
+                ) {
+                    refs.push((x, y, z));
+                    i += 8;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    refs
+}
+
+/// Try to extract a usize from an Integer or Float token
+fn token_to_usize(token: &Token) -> Option<usize> {
+    match token {
+        Token::Integer(n) => {
+            if *n >= 0 { Some(*n as usize) } else { None }
+        }
+        Token::Float(f) => {
+            if *f >= 0.0 { Some(*f as usize) } else { None }
+        }
+        _ => None,
+    }
+}
+
+/// Find all cells that reference a given cell (dependents/reverse references).
+fn find_dependents(sheet: &Sheet, tx: usize, ty: usize, tz: usize) -> Vec<(usize, usize, usize)> {
+    let mut deps = Vec::new();
+    for (&(cx, cy, cz), cell) in sheet.cells() {
+        if let Some(ref contents) = cell.contents {
+            let refs = extract_cell_refs(contents);
+            if refs.contains(&(tx, ty, tz)) {
+                deps.push((cx, cy, cz));
+            }
+        }
+    }
+    deps.sort_by(|a, b| a.2.cmp(&b.2).then(a.1.cmp(&b.1)).then(a.0.cmp(&b.0)));
+    deps
+}
+
 fn render_sheet(f: &mut Frame, sheet: &Sheet, state: &DisplayState, area: Rect) {
     if area.height < 3 || area.width < 6 {
         return;
@@ -2019,6 +2259,20 @@ fn render_sheet(f: &mut Frame, sheet: &Sheet, state: &DisplayState, area: Rect) 
     }
     let header = Row::new(header_cells).height(1);
 
+    // Extract cell references: use goto_ref origin if cycling, else current cell
+    let (ref_source_x, ref_source_y, ref_source_z) = state.goto_ref_origin
+        .unwrap_or((sheet.cur_x, sheet.cur_y, sheet.cur_z));
+    let cur_refs: Vec<(usize, usize, usize)> = sheet
+        .get_cell(ref_source_x, ref_source_y, ref_source_z)
+        .and_then(|c| c.contents.as_ref())
+        .map(|tokens| extract_cell_refs(tokens))
+        .unwrap_or_default();
+
+    // Dependents: always show for focused cell; use d-cycle origin if active
+    let dep_source = state.goto_dep_origin
+        .unwrap_or((sheet.cur_x, sheet.cur_y, sheet.cur_z));
+    let cur_deps: Vec<(usize, usize, usize)> = find_dependents(sheet, dep_source.0, dep_source.1, dep_source.2);
+
     // Build data rows
     let mut rows = Vec::new();
     for dy in 0..visible_rows {
@@ -2029,11 +2283,16 @@ fn render_sheet(f: &mut Frame, sheet: &Sheet, state: &DisplayState, area: Rect) 
         ];
 
         for &(x, _) in &col_widths {
-            let content = if let Some(cell) = sheet.get_cell(x, y, z) {
+            let cell_data = sheet.get_cell(x, y, z);
+            let content = if let Some(cell) = cell_data {
                 cell.value.to_string()
             } else {
                 String::new()
             };
+
+            let has_formula = cell_data
+                .and_then(|c| c.contents.as_ref())
+                .is_some_and(|tokens| tokens.len() > 1 || matches!(tokens.first(), Some(Token::Identifier(_))));
 
             let in_mark = sheet.get_mark_range().is_some_and(|(x1, y1, z1, x2, y2, z2)|
                 x >= x1 && x <= x2 && y >= y1 && y <= y2 && z >= z1 && z <= z2);
@@ -2041,6 +2300,10 @@ fn render_sheet(f: &mut Frame, sheet: &Sheet, state: &DisplayState, area: Rect) 
             let search_match_idx = state.search_results.iter().position(|&(sx, sy, sz)| sx == x && sy == y && sz == z);
             let is_current_match = search_match_idx == Some(state.search_index) && !state.search_results.is_empty();
             let is_any_match = search_match_idx.is_some();
+            // Check if this cell is referenced by the current cell's formula
+            let ref_index = cur_refs.iter().position(|&(rx, ry, rz)| rx == x && ry == y && rz == z);
+            let dep_index = cur_deps.iter().position(|&(dx, dy, dz)| dx == x && dy == y && dz == z);
+
             let style = if is_picker {
                 Style::default().fg(Color::Black).bg(Color::Green)
             } else if x == sheet.cur_x && y == sheet.cur_y {
@@ -2049,12 +2312,20 @@ fn render_sheet(f: &mut Frame, sheet: &Sheet, state: &DisplayState, area: Rect) 
                 } else {
                     Style::default().fg(Color::Black).bg(Color::White)
                 }
+            } else if let Some(ri) = ref_index {
+                let color = REF_COLORS[ri % REF_COLORS.len()];
+                Style::default().fg(Color::Black).bg(color)
+            } else if let Some(di) = dep_index {
+                let color = REF_COLORS[di % REF_COLORS.len()];
+                Style::default().fg(color).bg(Color::DarkGray)
             } else if is_current_match {
                 Style::default().fg(Color::Black).bg(Color::LightYellow)
             } else if is_any_match {
                 Style::default().fg(Color::Black).bg(Color::Yellow)
             } else if in_mark {
                 Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else if has_formula {
+                Style::default().bg(Color::Rgb(20, 30, 40))
             } else {
                 Style::default()
             };
