@@ -16,3 +16,5 @@
 /src/teapot.lyx
 # Ignore rust build files
 /target
+# Ignore Claude Code local settings
+.claude/
