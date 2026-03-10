@@ -226,6 +226,30 @@ fn run_app(
                                 state.status_message = format!("Column {} width: {}", sheet.cur_x, w - 1);
                             }
                         }
+                        KeyCode::Char('m') => {
+                            if !sheet.marking {
+                                // Set mark1
+                                sheet.mark1_x = Some(sheet.cur_x);
+                                sheet.mark1_y = Some(sheet.cur_y);
+                                sheet.mark1_z = Some(sheet.cur_z);
+                                sheet.marking = true;
+                                state.status_message = format!("Mark1 set at ({},{},{}). Move and press m again.",
+                                    sheet.cur_x, sheet.cur_y, sheet.cur_z);
+                            } else {
+                                // Set mark2
+                                sheet.mark2_x = Some(sheet.cur_x);
+                                sheet.mark2_y = Some(sheet.cur_y);
+                                sheet.mark2_z = Some(sheet.cur_z);
+                                sheet.marking = false;
+                                state.status_message = format!("Block marked ({},{},{}) to ({},{},{})",
+                                    sheet.mark1_x.unwrap_or(0), sheet.mark1_y.unwrap_or(0), sheet.mark1_z.unwrap_or(0),
+                                    sheet.cur_x, sheet.cur_y, sheet.cur_z);
+                            }
+                        }
+                        KeyCode::Char('u') => {
+                            sheet.clear_mark();
+                            state.status_message = String::from("Mark cleared");
+                        }
                         KeyCode::Delete => {
                             // Clear current cell
                             let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
@@ -470,6 +494,48 @@ fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
             sheet.changed = true;
             state.status_message = format!("Alignment: {}", val);
         }
+        "clear" => {
+            if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                let count = sheet.clear_block(x1, y1, z1, x2, y2, z2);
+                sheet.clear_mark();
+                sheet.update();
+                state.status_message = format!("Cleared {} cells", count);
+            } else {
+                state.status_message = String::from("No block marked. Press m twice to mark a block.");
+            }
+        }
+        "copy" => {
+            if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                let count = sheet.copy_block(x1, y1, z1, x2, y2, z2,
+                    sheet.cur_x, sheet.cur_y, sheet.cur_z);
+                sheet.clear_mark();
+                sheet.update();
+                state.status_message = format!("Copied {} cells to ({},{},{})",
+                    count, sheet.cur_x, sheet.cur_y, sheet.cur_z);
+            } else {
+                state.status_message = String::from("No block marked. Press m twice to mark a block.");
+            }
+        }
+        "ir" | "insert-row" => {
+            sheet.insert_row(sheet.cur_y, sheet.cur_z);
+            sheet.update();
+            state.status_message = format!("Inserted row at {}", sheet.cur_y);
+        }
+        "dr" | "delete-row" => {
+            sheet.delete_row(sheet.cur_y, sheet.cur_z);
+            sheet.update();
+            state.status_message = format!("Deleted row {}", sheet.cur_y);
+        }
+        "ic" | "insert-col" => {
+            sheet.insert_col(sheet.cur_x, sheet.cur_z);
+            sheet.update();
+            state.status_message = format!("Inserted column at {}", sheet.cur_x);
+        }
+        "dc" | "delete-col" => {
+            sheet.delete_col(sheet.cur_x, sheet.cur_z);
+            sheet.update();
+            state.status_message = format!("Deleted column {}", sheet.cur_x);
+        }
         "help" => {
             state.input_mode = InputMode::Help;
         }
@@ -570,8 +636,8 @@ fn render_help(f: &mut Frame, area: Rect) {
     Tab           Next sheet          +/- Widen/narrow column
 
   Editing
-    e / Enter     Edit cell (enter formula or value)
-    Delete        Clear current cell
+    e / Enter     Edit cell            m   Mark block (twice)
+    Delete        Clear current cell   u   Clear mark
     Esc           Cancel editing
 
   Commands (press : to enter command mode)
@@ -580,6 +646,8 @@ fn render_help(f: &mut Frame, area: Rect) {
     :wq           Save and quit         :goto x,y  Move to cell
     :width N      Set column width      :align l/r/c/a
     :precision N  Set decimal places    :bold  :underline
+    :ir/:dr       Insert/delete row     :ic/:dc    Insert/delete col
+    :copy         Copy block to cursor  :clear     Clear marked block
     :help         Show this help
 
   Formulas
@@ -648,8 +716,12 @@ fn render_sheet(f: &mut Frame, sheet: &Sheet, area: Rect) {
                 String::new()
             };
 
+            let in_mark = sheet.get_mark_range().map_or(false, |(x1, y1, z1, x2, y2, z2)|
+                x >= x1 && x <= x2 && y >= y1 && y <= y2 && z >= z1 && z <= z2);
             let style = if x == sheet.cur_x && y == sheet.cur_y {
                 Style::default().fg(Color::Black).bg(Color::White)
+            } else if in_mark {
+                Style::default().fg(Color::Black).bg(Color::Cyan)
             } else {
                 Style::default()
             };

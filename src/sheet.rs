@@ -325,4 +325,283 @@ impl Sheet {
     pub fn cell_coords(&self) -> Vec<(usize, usize, usize)> {
         self.cells.keys().cloned().collect()
     }
+
+    /// Get the marked block range, normalized so (x1,y1,z1) <= (x2,y2,z2).
+    /// Returns None if marks are not fully set.
+    pub fn get_mark_range(&self) -> Option<(usize, usize, usize, usize, usize, usize)> {
+        match (self.mark1_x, self.mark1_y, self.mark1_z,
+               self.mark2_x, self.mark2_y, self.mark2_z) {
+            (Some(x1), Some(y1), Some(z1), Some(x2), Some(y2), Some(z2)) => {
+                Some((x1.min(x2), y1.min(y2), z1.min(z2),
+                      x1.max(x2), y1.max(y2), z1.max(z2)))
+            }
+            _ => None,
+        }
+    }
+
+    /// Clear all cells in a range
+    pub fn clear_block(&mut self, x1: usize, y1: usize, z1: usize,
+                       x2: usize, y2: usize, z2: usize) -> usize {
+        let mut count = 0;
+        let keys: Vec<_> = self.cells.keys()
+            .filter(|&&(x, y, z)| x >= x1 && x <= x2 && y >= y1 && y <= y2 && z >= z1 && z <= z2)
+            .cloned()
+            .collect();
+        for key in keys {
+            self.cells.remove(&key);
+            count += 1;
+        }
+        self.changed = true;
+        count
+    }
+
+    /// Insert rows at position y, shifting existing rows down
+    pub fn insert_row(&mut self, at_y: usize, z: usize) {
+        // Collect cells that need shifting (y >= at_y on this sheet)
+        let mut to_move: Vec<((usize, usize, usize), Cell)> = Vec::new();
+        let keys: Vec<_> = self.cells.keys()
+            .filter(|&&(_, y, cz)| cz == z && y >= at_y)
+            .cloned()
+            .collect();
+        // Remove in reverse y order to avoid conflicts
+        let mut keys_sorted = keys;
+        keys_sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        for key in keys_sorted {
+            if let Some(cell) = self.cells.remove(&key) {
+                to_move.push(((key.0, key.1 + 1, key.2), cell));
+            }
+        }
+        for (key, cell) in to_move {
+            self.cells.insert(key, cell);
+        }
+        self.dim_y += 1;
+        self.changed = true;
+    }
+
+    /// Delete a row, shifting rows above it down
+    pub fn delete_row(&mut self, at_y: usize, z: usize) {
+        // Remove cells at at_y
+        let keys_at: Vec<_> = self.cells.keys()
+            .filter(|&&(_, y, cz)| cz == z && y == at_y)
+            .cloned()
+            .collect();
+        for key in keys_at {
+            self.cells.remove(&key);
+        }
+        // Shift cells above at_y down
+        let mut to_move: Vec<((usize, usize, usize), Cell)> = Vec::new();
+        let keys: Vec<_> = self.cells.keys()
+            .filter(|&&(_, y, cz)| cz == z && y > at_y)
+            .cloned()
+            .collect();
+        let mut keys_sorted = keys;
+        keys_sorted.sort_by(|a, b| a.1.cmp(&b.1));
+        for key in keys_sorted {
+            if let Some(cell) = self.cells.remove(&key) {
+                to_move.push(((key.0, key.1 - 1, key.2), cell));
+            }
+        }
+        for (key, cell) in to_move {
+            self.cells.insert(key, cell);
+        }
+        if self.dim_y > 1 { self.dim_y -= 1; }
+        self.changed = true;
+    }
+
+    /// Insert a column at position x, shifting existing columns right
+    pub fn insert_col(&mut self, at_x: usize, z: usize) {
+        let mut to_move: Vec<((usize, usize, usize), Cell)> = Vec::new();
+        let keys: Vec<_> = self.cells.keys()
+            .filter(|&&(x, _, cz)| cz == z && x >= at_x)
+            .cloned()
+            .collect();
+        let mut keys_sorted = keys;
+        keys_sorted.sort_by(|a, b| b.0.cmp(&a.0));
+        for key in keys_sorted {
+            if let Some(cell) = self.cells.remove(&key) {
+                to_move.push(((key.0 + 1, key.1, key.2), cell));
+            }
+        }
+        for (key, cell) in to_move {
+            self.cells.insert(key, cell);
+        }
+        // Shift column widths
+        let mut width_moves: Vec<((usize, usize), usize)> = Vec::new();
+        let width_keys: Vec<_> = self.column_widths.keys()
+            .filter(|&&(x, cz)| cz == z && x >= at_x)
+            .cloned()
+            .collect();
+        let mut wk_sorted = width_keys;
+        wk_sorted.sort_by(|a, b| b.0.cmp(&a.0));
+        for key in wk_sorted {
+            if let Some(w) = self.column_widths.remove(&key) {
+                width_moves.push(((key.0 + 1, key.1), w));
+            }
+        }
+        for (key, w) in width_moves {
+            self.column_widths.insert(key, w);
+        }
+        self.dim_x += 1;
+        self.changed = true;
+    }
+
+    /// Delete a column, shifting columns to the right left
+    pub fn delete_col(&mut self, at_x: usize, z: usize) {
+        // Remove cells at at_x
+        let keys_at: Vec<_> = self.cells.keys()
+            .filter(|&&(x, _, cz)| cz == z && x == at_x)
+            .cloned()
+            .collect();
+        for key in keys_at {
+            self.cells.remove(&key);
+        }
+        // Shift cells right of at_x left
+        let mut to_move: Vec<((usize, usize, usize), Cell)> = Vec::new();
+        let keys: Vec<_> = self.cells.keys()
+            .filter(|&&(x, _, cz)| cz == z && x > at_x)
+            .cloned()
+            .collect();
+        let mut keys_sorted = keys;
+        keys_sorted.sort_by(|a, b| a.0.cmp(&b.0));
+        for key in keys_sorted {
+            if let Some(cell) = self.cells.remove(&key) {
+                to_move.push(((key.0 - 1, key.1, key.2), cell));
+            }
+        }
+        for (key, cell) in to_move {
+            self.cells.insert(key, cell);
+        }
+        // Shift column widths
+        self.column_widths.remove(&(at_x, z));
+        let mut width_moves: Vec<((usize, usize), usize)> = Vec::new();
+        let width_keys: Vec<_> = self.column_widths.keys()
+            .filter(|&&(x, cz)| cz == z && x > at_x)
+            .cloned()
+            .collect();
+        let mut wk_sorted = width_keys;
+        wk_sorted.sort_by(|a, b| a.0.cmp(&b.0));
+        for key in wk_sorted {
+            if let Some(w) = self.column_widths.remove(&key) {
+                width_moves.push(((key.0 - 1, key.1), w));
+            }
+        }
+        for (key, w) in width_moves {
+            self.column_widths.insert(key, w);
+        }
+        if self.dim_x > 1 { self.dim_x -= 1; }
+        self.changed = true;
+    }
+
+    /// Copy a block of cells to a new location
+    pub fn copy_block(&mut self, x1: usize, y1: usize, z1: usize,
+                      x2: usize, y2: usize, z2: usize,
+                      to_x: usize, to_y: usize, to_z: usize) -> usize {
+        let mut copies: Vec<((usize, usize, usize), Cell)> = Vec::new();
+        for (&(x, y, z), cell) in &self.cells {
+            if x >= x1 && x <= x2 && y >= y1 && y <= y2 && z >= z1 && z <= z2 {
+                let nx = to_x + (x - x1);
+                let ny = to_y + (y - y1);
+                let nz = to_z + (z - z1);
+                copies.push(((nx, ny, nz), cell.clone()));
+            }
+        }
+        let count = copies.len();
+        for (key, cell) in copies {
+            self.cells.insert(key, cell);
+            if key.0 >= self.dim_x { self.dim_x = key.0 + 1; }
+            if key.1 >= self.dim_y { self.dim_y = key.1 + 1; }
+            if key.2 >= self.dim_z { self.dim_z = key.2 + 1; }
+        }
+        self.changed = true;
+        count
+    }
+
+    /// Clear the mark
+    pub fn clear_mark(&mut self) {
+        self.mark1_x = None;
+        self.mark1_y = None;
+        self.mark1_z = None;
+        self.mark2_x = None;
+        self.mark2_y = None;
+        self.mark2_z = None;
+        self.marking = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_insert_delete_row() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(1)]);
+        sheet.putcont(0, 1, 0, vec![Token::Integer(2)]);
+        sheet.putcont(0, 2, 0, vec![Token::Integer(3)]);
+        sheet.update();
+
+        // Insert row at y=1, should shift rows 1,2 down
+        sheet.insert_row(1, 0);
+        assert!(sheet.get_cell(0, 1, 0).is_none()); // new empty row
+        assert_eq!(sheet.get_cell(0, 0, 0).unwrap().value, Token::Integer(1));
+        assert_eq!(sheet.get_cell(0, 2, 0).unwrap().value, Token::Integer(2));
+        assert_eq!(sheet.get_cell(0, 3, 0).unwrap().value, Token::Integer(3));
+
+        // Delete row at y=1, should shift back
+        sheet.delete_row(1, 0);
+        assert_eq!(sheet.get_cell(0, 0, 0).unwrap().value, Token::Integer(1));
+        assert_eq!(sheet.get_cell(0, 1, 0).unwrap().value, Token::Integer(2));
+        assert_eq!(sheet.get_cell(0, 2, 0).unwrap().value, Token::Integer(3));
+    }
+
+    #[test]
+    fn test_insert_delete_col() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(1)]);
+        sheet.putcont(1, 0, 0, vec![Token::Integer(2)]);
+        sheet.putcont(2, 0, 0, vec![Token::Integer(3)]);
+        sheet.update();
+
+        sheet.insert_col(1, 0);
+        assert_eq!(sheet.get_cell(0, 0, 0).unwrap().value, Token::Integer(1));
+        assert!(sheet.get_cell(1, 0, 0).is_none());
+        assert_eq!(sheet.get_cell(2, 0, 0).unwrap().value, Token::Integer(2));
+        assert_eq!(sheet.get_cell(3, 0, 0).unwrap().value, Token::Integer(3));
+
+        sheet.delete_col(1, 0);
+        assert_eq!(sheet.get_cell(0, 0, 0).unwrap().value, Token::Integer(1));
+        assert_eq!(sheet.get_cell(1, 0, 0).unwrap().value, Token::Integer(2));
+        assert_eq!(sheet.get_cell(2, 0, 0).unwrap().value, Token::Integer(3));
+    }
+
+    #[test]
+    fn test_clear_block() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(1)]);
+        sheet.putcont(1, 0, 0, vec![Token::Integer(2)]);
+        sheet.putcont(0, 1, 0, vec![Token::Integer(3)]);
+        sheet.putcont(1, 1, 0, vec![Token::Integer(4)]);
+        sheet.update();
+
+        let count = sheet.clear_block(0, 0, 0, 1, 0, 0);
+        assert_eq!(count, 2);
+        assert!(sheet.get_cell(0, 0, 0).is_none());
+        assert!(sheet.get_cell(1, 0, 0).is_none());
+        assert_eq!(sheet.get_cell(0, 1, 0).unwrap().value, Token::Integer(3));
+    }
+
+    #[test]
+    fn test_copy_block() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(1)]);
+        sheet.putcont(1, 0, 0, vec![Token::Integer(2)]);
+        sheet.update();
+
+        let count = sheet.copy_block(0, 0, 0, 1, 0, 0, 0, 1, 0);
+        assert_eq!(count, 2);
+        assert_eq!(sheet.get_cell(0, 1, 0).unwrap().value, Token::Integer(1));
+        assert_eq!(sheet.get_cell(1, 1, 0).unwrap().value, Token::Integer(2));
+        // Originals still there
+        assert_eq!(sheet.get_cell(0, 0, 0).unwrap().value, Token::Integer(1));
+    }
 }
