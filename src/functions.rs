@@ -20,7 +20,7 @@ pub fn call_function(name: &str, args: &[Token], ctx: &mut EvalContext) -> Token
         "string" => func_string(args),
 
         // Math
-        "abs" => sci_func(args, f64::abs),
+        "abs" => func_abs(args),
         "sin" => sci_func(args, f64::sin),
         "cos" => sci_func(args, f64::cos),
         "tan" => sci_func(args, f64::tan),
@@ -226,12 +226,59 @@ fn func_int(args: &[Token]) -> Token {
     if args.is_empty() {
         return Token::Error("argument expected".to_string());
     }
-    match &args[0] {
-        Token::Integer(_) => args[0].clone(),
-        Token::Float(f) => Token::Integer(*f as i64),
-        Token::Empty => Token::Integer(0),
-        Token::Error(_) => args[0].clone(),
-        _ => Token::Error("wrong argument type for int()".to_string()),
+    // 1-arg form: simple conversion
+    if args.len() == 1 {
+        return match &args[0] {
+            Token::Integer(_) => args[0].clone(),
+            Token::Float(f) => Token::Integer(*f as i64),
+            Token::Empty => Token::Integer(0),
+            Token::String(s) => {
+                // Parse string as integer (like C strtol)
+                let s = s.trim();
+                if let Ok(i) = s.parse::<i64>() {
+                    Token::Integer(i)
+                } else if let Ok(f) = s.parse::<f64>() {
+                    Token::Integer(f as i64)
+                } else {
+                    Token::Error(format!("cannot convert '{}' to int", s))
+                }
+            }
+            Token::Error(_) => args[0].clone(),
+            _ => Token::Error("wrong argument type for int()".to_string()),
+        };
+    }
+    // 3-arg form: int(float, neg_mode, pos_mode)
+    if args.len() >= 3 {
+        let f = match to_float(&args[0]) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let neg_mode = match to_float(&args[1]) {
+            Ok(v) => v as i64,
+            Err(e) => return e,
+        };
+        let pos_mode = match to_float(&args[2]) {
+            Ok(v) => v as i64,
+            Err(e) => return e,
+        };
+        let mode = if f < 0.0 { neg_mode } else { pos_mode };
+        let result = match mode {
+            m if m < -1 => f.floor() as i64,   // floor
+            -1 => {                              // round away from zero
+                if f < 0.0 { f.floor() as i64 } else { f.ceil() as i64 }
+            }
+            0 => f as i64,                       // truncate (toward zero)
+            1 => {                               // round toward zero
+                if f < 0.0 { f.ceil() as i64 } else { f.floor() as i64 }
+            }
+            _ => f.ceil() as i64,                // ceil (m > 1)
+        };
+        return Token::Integer(result);
+    }
+    // 2-arg form: treat as 1-arg (ignore extra)
+    match to_float(&args[0]) {
+        Ok(f) => Token::Integer(f as i64),
+        Err(e) => e,
     }
 }
 
@@ -262,6 +309,30 @@ fn func_string(args: &[Token]) -> Token {
     if args.is_empty() {
         return Token::Error("argument expected".to_string());
     }
+    // With precision (and optional mode) arguments
+    if args.len() >= 2 {
+        let val = match to_float(&args[0]) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let precision = match to_float(&args[1]) {
+            Ok(v) => v as usize,
+            Err(e) => return e,
+        };
+        let scientific = if args.len() >= 3 {
+            match to_float(&args[2]) {
+                Ok(v) => v as i64 != 0,
+                Err(e) => return e,
+            }
+        } else {
+            false
+        };
+        return if scientific {
+            Token::String(format!("{:.prec$e}", val, prec = precision))
+        } else {
+            Token::String(format!("{:.prec$}", val, prec = precision))
+        };
+    }
     match &args[0] {
         Token::String(_) => args[0].clone(),
         Token::Integer(i) => Token::String(i.to_string()),
@@ -291,14 +362,18 @@ fn func_substr(args: &[Token]) -> Token {
         return Token::Error("substr requires 3 arguments".to_string());
     }
     match (&args[0], to_float(&args[1]), to_float(&args[2])) {
-        (Token::String(s), Ok(start), Ok(len)) => {
+        (Token::String(s), Ok(start), Ok(end)) => {
             let start = start as usize;
-            let len = len as usize;
+            let end = end as usize;
             if start >= s.len() {
                 Token::String(String::new())
             } else {
-                let end = (start + len).min(s.len());
-                Token::String(s[start..end].to_string())
+                let actual_end = (end + 1).min(s.len());
+                if start > end {
+                    Token::String(String::new())
+                } else {
+                    Token::String(s[start..actual_end].to_string())
+                }
             }
         }
         (Token::Error(_), _, _) => args[0].clone(),
@@ -357,34 +432,96 @@ fn func_n(args: &[Token], ctx: &mut EvalContext) -> Token {
 }
 
 fn func_min(args: &[Token], ctx: &mut EvalContext) -> Token {
-    let mut result = Token::Empty;
-    match iterate_range(args, ctx, |val| {
-        if !val.is_empty() {
-            if result.is_empty() {
-                result = val;
-            } else if let Token::Integer(1) = crate::eval::lt(&val, &result) {
-                result = val;
+    if args.len() < 2 {
+        return Token::Error("range requires 2 location arguments".to_string());
+    }
+    let (x1, y1, z1) = match to_location(&args[0]) { Ok(v) => v, Err(e) => return e };
+    let (x2, y2, z2) = match to_location(&args[1]) { Ok(v) => v, Err(e) => return e };
+    let (xmin, xmax) = (x1.min(x2), x1.max(x2));
+    let (ymin, ymax) = (y1.min(y2), y1.max(y2));
+    let (zmin, zmax) = (z1.min(z2), z1.max(z2));
+
+    let mut best_val = Token::Empty;
+    let mut best_loc: (usize, usize, usize) = (xmin, ymin, zmin);
+
+    for z in zmin..=zmax {
+        for y in ymin..=ymax {
+            for x in xmin..=xmax {
+                let val = ctx.sheet.getvalue(x, y, z);
+                if val.is_error() {
+                    return val;
+                }
+                if !val.is_empty() {
+                    if best_val.is_empty() {
+                        best_val = val;
+                        best_loc = (x, y, z);
+                    } else if let Token::Integer(1) = crate::eval::lt(&val, &best_val) {
+                        best_val = val;
+                        best_loc = (x, y, z);
+                    }
+                }
             }
         }
-    }) {
-        Ok(()) => result,
-        Err(e) => e,
+    }
+
+    if best_val.is_empty() {
+        Token::Empty
+    } else {
+        Token::Location([best_loc.0, best_loc.1, best_loc.2])
     }
 }
 
 fn func_max(args: &[Token], ctx: &mut EvalContext) -> Token {
-    let mut result = Token::Empty;
-    match iterate_range(args, ctx, |val| {
-        if !val.is_empty() {
-            if result.is_empty() {
-                result = val;
-            } else if let Token::Integer(1) = crate::eval::gt(&val, &result) {
-                result = val;
+    if args.len() < 2 {
+        return Token::Error("range requires 2 location arguments".to_string());
+    }
+    let (x1, y1, z1) = match to_location(&args[0]) { Ok(v) => v, Err(e) => return e };
+    let (x2, y2, z2) = match to_location(&args[1]) { Ok(v) => v, Err(e) => return e };
+    let (xmin, xmax) = (x1.min(x2), x1.max(x2));
+    let (ymin, ymax) = (y1.min(y2), y1.max(y2));
+    let (zmin, zmax) = (z1.min(z2), z1.max(z2));
+
+    let mut best_val = Token::Empty;
+    let mut best_loc: (usize, usize, usize) = (xmin, ymin, zmin);
+
+    for z in zmin..=zmax {
+        for y in ymin..=ymax {
+            for x in xmin..=xmax {
+                let val = ctx.sheet.getvalue(x, y, z);
+                if val.is_error() {
+                    return val;
+                }
+                if !val.is_empty() {
+                    if best_val.is_empty() {
+                        best_val = val;
+                        best_loc = (x, y, z);
+                    } else if let Token::Integer(1) = crate::eval::gt(&val, &best_val) {
+                        best_val = val;
+                        best_loc = (x, y, z);
+                    }
+                }
             }
         }
-    }) {
-        Ok(()) => result,
-        Err(e) => e,
+    }
+
+    if best_val.is_empty() {
+        Token::Empty
+    } else {
+        Token::Location([best_loc.0, best_loc.1, best_loc.2])
+    }
+}
+
+/// abs() — preserve integer type for integer input
+fn func_abs(args: &[Token]) -> Token {
+    if args.is_empty() {
+        return Token::Error("argument expected".to_string());
+    }
+    match &args[0] {
+        Token::Integer(i) => Token::Integer(i.abs()),
+        Token::Float(f) => Token::Float(f.abs()),
+        Token::Empty => Token::Integer(0),
+        Token::Error(_) => args[0].clone(),
+        _ => Token::Error("wrong argument type".to_string()),
     }
 }
 
@@ -550,8 +687,25 @@ fn func_time() -> Token {
     }
 }
 
-fn func_clock(args: &[Token], ctx: &EvalContext) -> Token {
-    // Return the clocked value of the current cell
+fn func_clock(args: &[Token], ctx: &mut EvalContext) -> Token {
+    // clock(condition, location[, location]) — enable clock_t2 on cells
+    if args.len() >= 2 {
+        if let Ok(condition) = to_float(&args[0]) {
+            if condition as i64 != 0 {
+                // Enable clock on the specified location(s)
+                if let Ok((x, y, z)) = to_location(&args[1]) {
+                    enable_clock_on_cell(ctx, x, y, z);
+                }
+                if args.len() >= 3 {
+                    if let Ok((x, y, z)) = to_location(&args[2]) {
+                        enable_clock_on_cell(ctx, x, y, z);
+                    }
+                }
+            }
+            return Token::Integer(condition as i64);
+        }
+    }
+    // 0-arg / 1-arg form: return the clocked value of the current cell
     if let Some(cell) = ctx.sheet.get_cell(ctx.x, ctx.y, ctx.z) {
         if !cell.clocked_value.is_empty() {
             return cell.clocked_value.clone();
@@ -561,6 +715,15 @@ fn func_clock(args: &[Token], ctx: &EvalContext) -> Token {
         Token::Empty
     } else {
         args[0].clone()
+    }
+}
+
+/// Enable clock_t2 on a cell (used by clock(condition, location) form)
+fn enable_clock_on_cell(ctx: &mut EvalContext, x: usize, y: usize, z: usize) {
+    let cell = ctx.sheet.get_or_create_cell(x, y, z);
+    if !cell.clock_t2 {
+        cell.clock_t2 = true;
+        cell.clocked_contents = cell.contents.clone();
     }
 }
 
@@ -588,12 +751,28 @@ fn func_strftime(args: &[Token]) -> Token {
 }
 
 fn func_strptime(args: &[Token]) -> Token {
-    // Simplified: parse a time string
     if args.len() < 2 {
         return Token::Error("strptime requires format and string".to_string());
     }
-    // Would need chrono for full implementation
-    Token::Error("strptime not yet implemented".to_string())
+    let fmt = match &args[0] {
+        Token::String(s) => s.as_str(),
+        Token::Error(_) => return args[0].clone(),
+        _ => return Token::Error("string expected for strptime format".to_string()),
+    };
+    let input = match &args[1] {
+        Token::String(s) => s.as_str(),
+        Token::Error(_) => return args[1].clone(),
+        _ => return Token::Error("string expected for strptime input".to_string()),
+    };
+    // Try parsing as NaiveDateTime first, then NaiveDate
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(input, fmt) {
+        return Token::Integer(dt.and_utc().timestamp());
+    }
+    if let Ok(d) = chrono::NaiveDate::parse_from_str(input, fmt) {
+        let dt = d.and_hms_opt(0, 0, 0).unwrap();
+        return Token::Integer(dt.and_utc().timestamp());
+    }
+    Token::Error(format!("strptime: cannot parse '{}' with format '{}'", input, fmt))
 }
 
 #[cfg(test)]
@@ -614,7 +793,7 @@ mod tests {
         let mut sheet = Sheet::new();
         let mut ctx = make_ctx(&mut sheet);
         assert_eq!(call_function("abs", &[Token::Float(-3.14)], &mut ctx), Token::Float(3.14));
-        assert_eq!(call_function("abs", &[Token::Integer(-5)], &mut ctx), Token::Float(5.0));
+        assert_eq!(call_function("abs", &[Token::Integer(-5)], &mut ctx), Token::Integer(5));
     }
 
     #[test]
@@ -707,5 +886,386 @@ mod tests {
             Token::Integer(t) => assert!(t > 0),
             _ => panic!("expected integer timestamp"),
         }
+    }
+
+    // --- Cell reference tests ---
+
+    #[test]
+    fn test_at_no_args() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(42)]);
+        sheet.update();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(call_function("@", &[], &mut ctx), Token::Integer(42));
+    }
+
+    #[test]
+    fn test_at_single_coord() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(3, 0, 0, vec![Token::Integer(99)]);
+        sheet.update();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(call_function("@", &[Token::Integer(3)], &mut ctx), Token::Integer(99));
+    }
+
+    #[test]
+    fn test_at_two_coords() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(2, 3, 0, vec![Token::Integer(77)]);
+        sheet.update();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(call_function("@", &[Token::Integer(2), Token::Integer(3)], &mut ctx), Token::Integer(77));
+    }
+
+    #[test]
+    fn test_at_three_coords() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(1, 2, 1, vec![Token::Integer(55)]);
+        sheet.update();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(call_function("@", &[Token::Integer(1), Token::Integer(2), Token::Integer(1)], &mut ctx), Token::Integer(55));
+    }
+
+    #[test]
+    fn test_at_location() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(1, 1, 0, vec![Token::Integer(88)]);
+        sheet.update();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(call_function("@", &[Token::Location([1, 1, 0])], &mut ctx), Token::Integer(88));
+    }
+
+    #[test]
+    fn test_at_label() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(2, 0, 0, vec![Token::Integer(100)]);
+        sheet.get_or_create_cell(2, 0, 0).label = Some("myval".to_string());
+        sheet.cachelabels();
+        sheet.update();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(call_function("@", &[Token::String("myval".to_string())], &mut ctx), Token::Integer(100));
+    }
+
+    #[test]
+    fn test_at_empty_coords() {
+        // @(,y,) uses defaults for x and z
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 5, 0, vec![Token::Integer(33)]);
+        sheet.update();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(call_function("@", &[Token::Empty, Token::Integer(5), Token::Empty], &mut ctx), Token::Integer(33));
+    }
+
+    #[test]
+    fn test_adr_no_args() {
+        let mut sheet = Sheet::new();
+        let mut ctx = EvalContext { sheet: &mut sheet, x: 3, y: 7, z: 1, max_eval: 256 };
+        assert_eq!(call_function("&", &[], &mut ctx), Token::Location([3, 7, 1]));
+    }
+
+    #[test]
+    fn test_adr_partial() {
+        let mut sheet = Sheet::new();
+        let mut ctx = EvalContext { sheet: &mut sheet, x: 3, y: 7, z: 1, max_eval: 256 };
+        assert_eq!(call_function("&", &[Token::Integer(5)], &mut ctx), Token::Location([5, 7, 1]));
+        assert_eq!(call_function("&", &[Token::Integer(5), Token::Integer(2)], &mut ctx), Token::Location([5, 2, 1]));
+    }
+
+    // --- Aggregate tests ---
+
+    #[test]
+    fn test_sum_range() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(10)]);
+        sheet.putcont(0, 1, 0, vec![Token::Integer(20)]);
+        sheet.putcont(0, 2, 0, vec![Token::Integer(30)]);
+        sheet.update();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(
+            call_function("sum", &[Token::Location([0, 0, 0]), Token::Location([0, 2, 0])], &mut ctx),
+            Token::Integer(60)
+        );
+    }
+
+    #[test]
+    fn test_sum_empty_cells() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(10)]);
+        // cell (0,1,0) is empty
+        sheet.putcont(0, 2, 0, vec![Token::Integer(30)]);
+        sheet.update();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(
+            call_function("sum", &[Token::Location([0, 0, 0]), Token::Location([0, 2, 0])], &mut ctx),
+            Token::Integer(40)
+        );
+    }
+
+    #[test]
+    fn test_n_count() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(10)]);
+        // cell (0,1,0) is empty
+        sheet.putcont(0, 2, 0, vec![Token::Integer(30)]);
+        sheet.update();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(
+            call_function("n", &[Token::Location([0, 0, 0]), Token::Location([0, 2, 0])], &mut ctx),
+            Token::Integer(2)
+        );
+    }
+
+    #[test]
+    fn test_min_returns_location() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(42)]);
+        sheet.putcont(0, 1, 0, vec![Token::Integer(99)]);
+        sheet.update();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("min", &[Token::Location([0, 0, 0]), Token::Location([0, 1, 0])], &mut ctx);
+        assert_eq!(result, Token::Location([0, 0, 0])); // min is 42 at (0,0,0)
+    }
+
+    #[test]
+    fn test_max_returns_location() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(42)]);
+        sheet.putcont(0, 1, 0, vec![Token::Integer(99)]);
+        sheet.update();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("max", &[Token::Location([0, 0, 0]), Token::Location([0, 1, 0])], &mut ctx);
+        assert_eq!(result, Token::Location([0, 1, 0])); // max is 99 at (0,1,0)
+    }
+
+    // --- Math tests ---
+
+    #[test]
+    fn test_log_natural() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("log", &[Token::Float(std::f64::consts::E)], &mut ctx);
+        match result {
+            Token::Float(f) => assert!((f - 1.0).abs() < 1e-10),
+            _ => panic!("expected float"),
+        }
+    }
+
+    #[test]
+    fn test_log_base10() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("log", &[Token::Float(100.0), Token::Integer(10)], &mut ctx);
+        match result {
+            Token::Float(f) => assert!((f - 2.0).abs() < 1e-10),
+            _ => panic!("expected float"),
+        }
+    }
+
+    #[test]
+    fn test_log_domain_error() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert!(call_function("log", &[Token::Float(-1.0)], &mut ctx).is_error());
+    }
+
+    #[test]
+    fn test_abs_preserves_int() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(call_function("abs", &[Token::Integer(-5)], &mut ctx), Token::Integer(5));
+    }
+
+    #[test]
+    fn test_abs_float() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(call_function("abs", &[Token::Float(-3.14)], &mut ctx), Token::Float(3.14));
+    }
+
+    #[test]
+    fn test_rnd_range() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("rnd", &[], &mut ctx);
+        match result {
+            Token::Float(f) => assert!((0.0..1.0).contains(&f)),
+            _ => panic!("expected float"),
+        }
+    }
+
+    #[test]
+    fn test_frac() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("frac", &[Token::Float(3.14)], &mut ctx);
+        match result {
+            Token::Float(f) => assert!((f - 0.14).abs() < 1e-10),
+            _ => panic!("expected float"),
+        }
+    }
+
+    // --- Type conversion tests ---
+
+    #[test]
+    fn test_int_from_string() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(call_function("int", &[Token::String("42".to_string())], &mut ctx), Token::Integer(42));
+    }
+
+    #[test]
+    fn test_int_rounding_modes() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        // int(2.7, neg_mode, pos_mode) — positive value, so pos_mode applies
+        // mode < -1 = floor
+        assert_eq!(
+            call_function("int", &[Token::Float(2.7), Token::Integer(0), Token::Integer(-2)], &mut ctx),
+            Token::Integer(2) // floor(2.7) = 2
+        );
+        // mode > 1 = ceil
+        assert_eq!(
+            call_function("int", &[Token::Float(2.7), Token::Integer(0), Token::Integer(2)], &mut ctx),
+            Token::Integer(3) // ceil(2.7) = 3
+        );
+        // mode = 0 = truncate
+        assert_eq!(
+            call_function("int", &[Token::Float(-2.7), Token::Integer(0), Token::Integer(0)], &mut ctx),
+            Token::Integer(-2) // truncate(-2.7) = -2
+        );
+        // mode = -1 = round away from zero (negative value, so neg_mode applies)
+        assert_eq!(
+            call_function("int", &[Token::Float(-2.3), Token::Integer(-1), Token::Integer(0)], &mut ctx),
+            Token::Integer(-3) // floor(-2.3) = -3 (away from zero)
+        );
+    }
+
+    #[test]
+    fn test_int_no_args_error() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert!(call_function("int", &[], &mut ctx).is_error());
+    }
+
+    #[test]
+    fn test_string_with_precision() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(
+            call_function("string", &[Token::Float(3.14159), Token::Integer(2)], &mut ctx),
+            Token::String("3.14".to_string())
+        );
+    }
+
+    #[test]
+    fn test_string_scientific() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("string", &[Token::Float(12345.0), Token::Integer(2), Token::Integer(1)], &mut ctx);
+        match result {
+            Token::String(s) => assert!(s.contains('e'), "expected scientific notation, got: {}", s),
+            _ => panic!("expected string"),
+        }
+    }
+
+    // --- String tests ---
+
+    #[test]
+    fn test_substr_inclusive() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        // substr("hello", 1, 3) = chars at indices 1,2,3 = "ell"
+        assert_eq!(
+            call_function("substr", &[Token::String("hello".to_string()), Token::Integer(1), Token::Integer(3)], &mut ctx),
+            Token::String("ell".to_string())
+        );
+    }
+
+    #[test]
+    fn test_substr_boundary() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        // end beyond string length — should clamp
+        assert_eq!(
+            call_function("substr", &[Token::String("hi".to_string()), Token::Integer(0), Token::Integer(10)], &mut ctx),
+            Token::String("hi".to_string())
+        );
+    }
+
+    #[test]
+    fn test_len_empty() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(call_function("len", &[Token::String(String::new())], &mut ctx), Token::Integer(0));
+    }
+
+    // --- Utility tests ---
+
+    #[test]
+    fn test_poly() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        // poly(2, 1, 3, 5) = 1 + 3*2 + 5*4 = 27
+        let result = call_function("poly", &[Token::Integer(2), Token::Integer(1), Token::Integer(3), Token::Integer(5)], &mut ctx);
+        assert_eq!(result, Token::Float(27.0));
+    }
+
+    #[test]
+    fn test_env_existing() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("$", &[Token::String("HOME".to_string())], &mut ctx);
+        match result {
+            Token::String(s) => assert!(!s.is_empty()),
+            _ => panic!("expected string"),
+        }
+    }
+
+    #[test]
+    fn test_strftime_format() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("strftime", &[Token::String("%Y".to_string())], &mut ctx);
+        match result {
+            Token::String(s) => assert_eq!(s.len(), 4, "expected 4-digit year, got: {}", s),
+            _ => panic!("expected string"),
+        }
+    }
+
+    #[test]
+    fn test_strptime() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("strptime", &[
+            Token::String("%Y-%m-%d".to_string()),
+            Token::String("2024-01-15".to_string()),
+        ], &mut ctx);
+        match result {
+            Token::Integer(ts) => assert!(ts > 0),
+            other => panic!("expected integer timestamp, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_clock_enable() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(1, 1, 0, vec![Token::Integer(42)]);
+        sheet.update();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("clock", &[Token::Integer(1), Token::Location([1, 1, 0])], &mut ctx);
+        assert_eq!(result, Token::Integer(1));
+        // Verify clock_t2 was set
+        assert!(ctx.sheet.get_cell(1, 1, 0).unwrap().clock_t2);
+    }
+
+    #[test]
+    fn test_eval_cell() {
+        let mut sheet = Sheet::new();
+        // Put a simple expression "5" in cell (1,0,0)
+        sheet.putcont(1, 0, 0, vec![Token::Integer(5)]);
+        sheet.update();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("eval", &[Token::Location([1, 0, 0])], &mut ctx);
+        assert_eq!(result, Token::Integer(5));
     }
 }
