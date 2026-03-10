@@ -518,8 +518,7 @@ fn render_sheet(f: &mut Frame, sheet: &Sheet, area: Rect) {
     let mut used_width = row_num_width;
 
     let start_col = sheet.off_x;
-    let max_col = sheet.dim_x.max(sheet.cur_x + 1);
-    for x in start_col..max_col {
+    for x in start_col.. {
         let w = sheet.column_width(x, z) as u16;
         if used_width + w + 1 > area.width {
             break;
