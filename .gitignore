@@ -16,5 +16,8 @@
 /src/teapot.lyx
 # Ignore rust build files
 /target
+# Ignore test spreadsheet files at top level
+/*.tpa
+/*.tpz
 # Ignore Claude Code local settings
 .claude/
