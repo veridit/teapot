@@ -104,10 +104,21 @@ fn sci_func(args: &[Token], f: impl Fn(f64) -> f64) -> Token {
 
 fn func_at(args: &[Token], ctx: &mut EvalContext) -> Token {
     if args.len() < 3 {
-        // Single location argument
+        // Single argument: location or string (label name)
         if args.len() == 1 {
-            if let Ok((x, y, z)) = to_location(&args[0]) {
-                return ctx.sheet.getvalue(x, y, z);
+            match &args[0] {
+                Token::Location(loc) => {
+                    return ctx.sheet.getvalue(loc[0], loc[1], loc[2]);
+                }
+                Token::String(label) => {
+                    if let Some((x, y, z)) = ctx.sheet.findlabel_location(label) {
+                        return ctx.sheet.getvalue(x, y, z);
+                    } else {
+                        return Token::Error(format!("label '{}' not found", label));
+                    }
+                }
+                Token::Error(_) => return args[0].clone(),
+                _ => {}
             }
         }
         return Token::Error("@ requires location argument".to_string());
@@ -392,13 +403,46 @@ fn func_eval(args: &[Token], ctx: &mut EvalContext) -> Token {
     if args.is_empty() {
         return Token::Error("argument expected".to_string());
     }
-    match &args[0] {
-        Token::Location(loc) => {
-            let (x, y, z) = (loc[0], loc[1], loc[2]);
-            ctx.sheet.getvalue(x, y, z)
-        }
-        _ => args[0].clone(),
+    let (x, y, z) = match &args[0] {
+        Token::Location(loc) => (loc[0], loc[1], loc[2]),
+        _ => return args[0].clone(),
+    };
+
+    // Prevent infinite recursion
+    if ctx.max_eval <= 0 {
+        return Token::Error("max eval depth exceeded".to_string());
     }
+    ctx.max_eval -= 1;
+
+    // Take the cell's contents out (same take/put pattern as Sheet::eval_cell)
+    let contents = ctx.sheet.cells_mut()
+        .get_mut(&(x, y, z))
+        .and_then(|c| c.contents.take());
+
+    let result = if let Some(tokens) = &contents {
+        // Save and set context coordinates
+        let (old_x, old_y, old_z) = (ctx.x, ctx.y, ctx.z);
+        ctx.x = x;
+        ctx.y = y;
+        ctx.z = z;
+        let result = crate::parser::eval_tokens(tokens, ctx);
+        ctx.x = old_x;
+        ctx.y = old_y;
+        ctx.z = old_z;
+        result
+    } else {
+        Token::Empty
+    };
+
+    // Put contents back
+    if let Some(tokens) = contents {
+        if let Some(cell) = ctx.sheet.cells_mut().get_mut(&(x, y, z)) {
+            cell.contents = Some(tokens);
+        }
+    }
+
+    ctx.max_eval += 1;
+    result
 }
 
 fn func_error(args: &[Token]) -> Token {

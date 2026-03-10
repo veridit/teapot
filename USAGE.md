@@ -9,7 +9,7 @@ Teapot has four main modes:
 - **Command** — type a `:command` to execute
 - **Help** — view the help screen (press `?`)
 
-Additionally, overlay popups can appear for the command palette, sheet picker, and cell picker.
+Additionally, overlay popups can appear for the command palette, sheet picker, cell picker, and labels picker.
 
 ## Navigation
 
@@ -102,13 +102,28 @@ Press `:` to enter command mode. Tab completes command names.
 
 ### Formatting
 
+These commands apply to the marked block if one is set, otherwise to the current cell.
+
 | Command | Description |
 |---------|-------------|
 | `:width N` | Set column width |
-| `:precision N` | Set decimal precision for current cell |
+| `:precision N` | Set decimal precision |
 | `:bold` | Toggle bold |
 | `:underline` | Toggle underline |
-| `:align left\|right\|center\|auto` | Set cell alignment |
+| `:align left\|right\|center\|auto` | Set alignment |
+| `:lock` | Toggle cell lock |
+| `:ignore` | Toggle ignore in calculations |
+
+### Labels
+
+Any cell can have a named label. Labeled cells are shown with green text, and the label name appears in the status bar when the cursor is on that cell. Label references are highlighted with the same colored backgrounds as `@(x,y,z)` references.
+
+| Command | Description |
+|---------|-------------|
+| `:label <name>` | Set label on current cell (clear with `:label` alone) |
+| `:labels` | Open labels picker — jump to any labeled cell |
+
+Use labels in formulas with `@("labelName")` or just `labelName` (standalone returns the value directly).
 
 ### Block Operations
 
@@ -138,6 +153,8 @@ Mark a block by pressing `m` at two corners. Then:
 | `:dc` / `:delete-col` | Delete column at cursor |
 
 ### Export
+
+If a block is marked, export commands export only the marked range. Otherwise they export the full sheet.
 
 | Command | Description |
 |---------|-------------|
@@ -236,6 +253,12 @@ EOF
 | `sort-z [x,y] [asc\|desc]` | Sort marked block layers |
 | `mirror-x` / `mirror-y` / `mirror-z` | Mirror marked block |
 | `fill cols rows [layers]` | Fill marked block |
+| `bold` | Toggle bold (block-aware) |
+| `underline` | Toggle underline (block-aware) |
+| `lock` | Toggle lock (block-aware) |
+| `ignore` | Toggle ignore (block-aware) |
+| `align left\|right\|center\|auto` | Set alignment (block-aware) |
+| `label <name>` | Set label on current cell |
 | `clock` | Toggle clock on current cell |
 | `clock-tick` | Run one clock tick |
 | `search <pattern>` | Print matching cell coordinates and values |
@@ -250,6 +273,8 @@ EOF
 | `save-xlsx <file>` | Save as XLSX |
 | `save-text <file>` | Save as plain text |
 
+Save/export commands in batch mode also respect the mark range set via `from`/`to`.
+
 ## Formulas
 
 Teapot uses a functional syntax for cell references instead of the traditional A1 notation:
@@ -258,7 +283,14 @@ Teapot uses a functional syntax for cell references instead of the traditional A
 @(x, y, z)              # absolute reference
 @(x()-1, y(), z())      # relative: one column left
 @(x(), y()-1, z())      # relative: one row up
+@("labelName")          # label-based reference
+labelName               # standalone label (returns value)
+eval(@(x, y, z))        # re-evaluate a cell's formula
 ```
+
+### eval()
+
+`eval(@(x,y,z))` re-evaluates the formula in the referenced cell and returns the result. Unlike `@()` which returns the cached value, `eval()` runs the formula from scratch. This is useful for indirect references and meta-programming. Recursion depth is limited to prevent infinite loops.
 
 ### Operators (by precedence, lowest first)
 
@@ -272,14 +304,14 @@ Teapot uses a functional syntax for cell references instead of the traditional A
 
 ### Built-in Functions
 
-**Math:** `abs`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `exp`, `log`, `log10`, `sqrt`, `rnd`, `pi`, `e`
+**Math:** `abs`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `arsinh`, `arcosh`, `artanh`, `deg2rad`, `rad2deg`, `log`, `e`, `rnd`, `poly`
 
-**String:** `len`, `substr`, `find`, `upper`, `lower`, `trim`, `concat`
+**String:** `len`, `substr`
 
-**Cell references:** `@` (value), `&` (string contents), `x`, `y`, `z` (coordinates of a label)
+**Cell references:** `@` (value at location or label), `&` (address from coordinates), `x`, `y`, `z` (extract coordinate)
 
-**Aggregates:** `sum`, `n` (count), `min`, `max`, `avg`
+**Aggregates:** `sum`, `n` (count), `min`, `max`
 
-**Type conversion:** `int`, `float`, `string`, `type`, `error`
+**Type conversion:** `int`, `float`, `frac`, `string`, `error`
 
-**Utility:** `abs`, `clock`, `eval`, `if`
+**Utility:** `eval` (re-evaluate formula), `clock` (clocked cell value), `$` (environment variable), `time`, `strftime`, `strptime`

@@ -33,6 +33,7 @@ const COMMANDS: &[&str] = &[
     "save-text",
     "search", "s", "search-all", "search-formula",
     "replace", "r", "replace-all",
+    "label", "labels", "lock", "ignore",
 ];
 
 struct DisplayState {
@@ -83,6 +84,10 @@ struct DisplayState {
     goto_dep_origin: Option<(usize, usize, usize)>,
     goto_dep_list: Vec<(usize, usize, usize)>,
     goto_dep_index: usize,
+    // Labels picker
+    labels_picker_active: bool,
+    labels_picker_selection: usize,
+    labels_picker_items: Vec<(String, usize, usize, usize)>,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -137,6 +142,9 @@ impl Default for DisplayState {
             goto_dep_origin: None,
             goto_dep_list: Vec::new(),
             goto_dep_index: 0,
+            labels_picker_active: false,
+            labels_picker_selection: 0,
+            labels_picker_items: Vec::new(),
         }
     }
 }
@@ -416,6 +424,11 @@ fn run_app(
                 handle_sheet_picker(key, sheet, state);
                 continue;
             }
+            // Handle labels picker
+            if state.labels_picker_active {
+                handle_labels_picker(key, sheet, state);
+                continue;
+            }
             // Handle cell picker
             if state.picker_active {
                 handle_cell_picker(key, sheet, state);
@@ -644,7 +657,7 @@ fn handle_normal(key: crossterm::event::KeyEvent, sheet: &mut Sheet, state: &mut
                 let refs = sheet
                     .get_cell(sheet.cur_x, sheet.cur_y, sheet.cur_z)
                     .and_then(|c| c.contents.as_ref())
-                    .map(|tokens| extract_cell_refs(tokens))
+                    .map(|tokens| extract_cell_refs_with_sheet(tokens, Some(sheet)))
                     .unwrap_or_default();
                 if refs.is_empty() {
                     state.status_message = String::from("No cell references in current cell");
@@ -1010,6 +1023,35 @@ fn handle_sheet_picker(key: crossterm::event::KeyEvent, sheet: &mut Sheet, state
     }
 }
 
+fn handle_labels_picker(key: crossterm::event::KeyEvent, sheet: &mut Sheet, state: &mut DisplayState) {
+    let count = state.labels_picker_items.len();
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => {
+            if state.labels_picker_selection > 0 {
+                state.labels_picker_selection -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if state.labels_picker_selection + 1 < count {
+                state.labels_picker_selection += 1;
+            }
+        }
+        KeyCode::Enter => {
+            if let Some((_name, x, y, z)) = state.labels_picker_items.get(state.labels_picker_selection) {
+                sheet.cur_x = *x;
+                sheet.cur_y = *y;
+                sheet.cur_z = *z;
+                state.status_message = format!("Jumped to label '{}' at ({},{},{})", _name, x, y, z);
+            }
+            state.labels_picker_active = false;
+        }
+        KeyCode::Esc => {
+            state.labels_picker_active = false;
+        }
+        _ => {}
+    }
+}
+
 /// Run incremental search and update results
 fn update_search_results(sheet: &Sheet, state: &mut DisplayState) {
     if state.search_pattern.is_empty() {
@@ -1276,6 +1318,18 @@ fn save_by_extension(sheet: &Sheet, filename: &str) -> anyhow::Result<usize> {
     }
 }
 
+/// Get the export range: marked block if set, otherwise full sheet dimensions
+fn get_export_range(sheet: &Sheet) -> (usize, usize, usize, usize, usize, usize) {
+    if let Some(range) = sheet.get_mark_range() {
+        range
+    } else {
+        (0, 0, 0,
+         sheet.dim_x.saturating_sub(1),
+         sheet.dim_y.saturating_sub(1),
+         sheet.dim_z.saturating_sub(1))
+    }
+}
+
 fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
     let cmd_owned = state.input_buffer.trim_start_matches(':').trim().to_string();
     let parts: Vec<&str> = cmd_owned.splitn(2, ' ').collect();
@@ -1383,54 +1437,158 @@ fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
         }
         "precision" => {
             if let Ok(p) = arg.parse::<i32>() {
-                let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
-                let cell = sheet.get_or_create_cell(x, y, z);
-                cell.precision = p;
-                sheet.changed = true;
-                state.status_message = format!("Precision set to {}", p);
+                if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                    for z in z1..=z2 { for y in y1..=y2 { for x in x1..=x2 {
+                        let cell = sheet.get_or_create_cell(x, y, z);
+                        cell.precision = p;
+                    }}}
+                    sheet.changed = true;
+                    state.status_message = format!("Precision set to {} on block", p);
+                } else {
+                    let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
+                    let cell = sheet.get_or_create_cell(x, y, z);
+                    cell.precision = p;
+                    sheet.changed = true;
+                    state.status_message = format!("Precision set to {}", p);
+                }
             } else {
                 state.status_message = String::from("Usage: :precision <number>");
             }
         }
         "bold" => {
-            let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
-            let cell = sheet.get_or_create_cell(x, y, z);
-            cell.bold = !cell.bold;
-            let val = cell.bold;
-            sheet.changed = true;
-            state.status_message = format!("Bold: {}", val);
+            if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                for z in z1..=z2 { for y in y1..=y2 { for x in x1..=x2 {
+                    let cell = sheet.get_or_create_cell(x, y, z);
+                    cell.bold = !cell.bold;
+                }}}
+                sheet.changed = true;
+                state.status_message = String::from("Bold toggled on block");
+            } else {
+                let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
+                let cell = sheet.get_or_create_cell(x, y, z);
+                cell.bold = !cell.bold;
+                let val = cell.bold;
+                sheet.changed = true;
+                state.status_message = format!("Bold: {}", val);
+            }
         }
         "underline" => {
-            let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
-            let cell = sheet.get_or_create_cell(x, y, z);
-            cell.underline = !cell.underline;
-            let val = cell.underline;
-            sheet.changed = true;
-            state.status_message = format!("Underline: {}", val);
+            if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                for z in z1..=z2 { for y in y1..=y2 { for x in x1..=x2 {
+                    let cell = sheet.get_or_create_cell(x, y, z);
+                    cell.underline = !cell.underline;
+                }}}
+                sheet.changed = true;
+                state.status_message = String::from("Underline toggled on block");
+            } else {
+                let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
+                let cell = sheet.get_or_create_cell(x, y, z);
+                cell.underline = !cell.underline;
+                let val = cell.underline;
+                sheet.changed = true;
+                state.status_message = format!("Underline: {}", val);
+            }
+        }
+        "lock" => {
+            if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                for z in z1..=z2 { for y in y1..=y2 { for x in x1..=x2 {
+                    let cell = sheet.get_or_create_cell(x, y, z);
+                    cell.locked = !cell.locked;
+                }}}
+                sheet.changed = true;
+                state.status_message = String::from("Lock toggled on block");
+            } else {
+                let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
+                let cell = sheet.get_or_create_cell(x, y, z);
+                cell.locked = !cell.locked;
+                let val = cell.locked;
+                sheet.changed = true;
+                state.status_message = format!("Lock: {}", val);
+            }
+        }
+        "ignore" => {
+            if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                for z in z1..=z2 { for y in y1..=y2 { for x in x1..=x2 {
+                    let cell = sheet.get_or_create_cell(x, y, z);
+                    cell.ignored = !cell.ignored;
+                }}}
+                sheet.changed = true;
+                state.status_message = String::from("Ignore toggled on block");
+            } else {
+                let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
+                let cell = sheet.get_or_create_cell(x, y, z);
+                cell.ignored = !cell.ignored;
+                let val = cell.ignored;
+                sheet.changed = true;
+                state.status_message = format!("Ignore: {}", val);
+            }
         }
         "align" => {
-            let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
-            let cell = sheet.get_or_create_cell(x, y, z);
-            match arg {
-                "left" | "l" => { cell.adjust = crate::sheet::Adjust::Left; }
-                "right" | "r" => { cell.adjust = crate::sheet::Adjust::Right; }
-                "center" | "c" => { cell.adjust = crate::sheet::Adjust::Center; }
-                "auto" | "a" => { cell.adjust = crate::sheet::Adjust::AutoAdjust; }
+            let adjust = match arg {
+                "left" | "l" => crate::sheet::Adjust::Left,
+                "right" | "r" => crate::sheet::Adjust::Right,
+                "center" | "c" => crate::sheet::Adjust::Center,
+                "auto" | "a" => crate::sheet::Adjust::AutoAdjust,
                 _ => {
                     state.status_message = String::from("Usage: :align left|right|center|auto");
                     return;
                 }
+            };
+            if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                for z in z1..=z2 { for y in y1..=y2 { for x in x1..=x2 {
+                    let cell = sheet.get_or_create_cell(x, y, z);
+                    cell.adjust = adjust;
+                }}}
+                sheet.changed = true;
+                state.status_message = format!("Alignment set to {:?} on block", adjust);
+            } else {
+                let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
+                let cell = sheet.get_or_create_cell(x, y, z);
+                cell.adjust = adjust;
+                sheet.changed = true;
+                state.status_message = format!("Alignment: {:?}", adjust);
             }
-            let val = format!("{:?}", cell.adjust);
-            sheet.changed = true;
-            state.status_message = format!("Alignment: {}", val);
+        }
+        "label" => {
+            let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
+            if arg.is_empty() {
+                // Clear label
+                if let Some(cell) = sheet.get_cell_mut(x, y, z) {
+                    cell.label = None;
+                }
+                sheet.cachelabels();
+                sheet.changed = true;
+                state.status_message = format!("Label cleared on ({},{},{})", x, y, z);
+            } else {
+                let cell = sheet.get_or_create_cell(x, y, z);
+                cell.label = Some(arg.to_string());
+                sheet.cachelabels();
+                sheet.changed = true;
+                state.status_message = format!("Label '{}' set on ({},{},{})", arg, x, y, z);
+            }
+        }
+        "labels" => {
+            let mut items: Vec<(String, usize, usize, usize)> = Vec::new();
+            for (&(x, y, z), cell) in sheet.cells() {
+                if let Some(ref label) = cell.label {
+                    items.push((label.clone(), x, y, z));
+                }
+            }
+            items.sort_by(|a, b| a.0.cmp(&b.0));
+            if items.is_empty() {
+                state.status_message = String::from("No labels defined");
+            } else {
+                state.labels_picker_items = items;
+                state.labels_picker_selection = 0;
+                state.labels_picker_active = true;
+            }
         }
         "export-html" => {
             if arg.is_empty() {
                 state.status_message = String::from("Usage: :export-html <file>");
             } else {
-                match crate::fileio::save_html(sheet, arg, false,
-                    0, 0, 0, sheet.dim_x.saturating_sub(1), sheet.dim_y.saturating_sub(1), sheet.dim_z.saturating_sub(1)) {
+                let (x1, y1, z1, x2, y2, z2) = get_export_range(sheet);
+                match crate::fileio::save_html(sheet, arg, false, x1, y1, z1, x2, y2, z2) {
                     Ok(count) => state.status_message = format!("Exported {} cells to {}", count, arg),
                     Err(e) => state.status_message = format!("Export failed: {}", e),
                 }
@@ -1440,8 +1598,8 @@ fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
             if arg.is_empty() {
                 state.status_message = String::from("Usage: :export-latex <file>");
             } else {
-                match crate::fileio::save_latex(sheet, arg, false,
-                    0, 0, 0, sheet.dim_x.saturating_sub(1), sheet.dim_y.saturating_sub(1), sheet.dim_z.saturating_sub(1)) {
+                let (x1, y1, z1, x2, y2, z2) = get_export_range(sheet);
+                match crate::fileio::save_latex(sheet, arg, false, x1, y1, z1, x2, y2, z2) {
                     Ok(count) => state.status_message = format!("Exported {} cells to {}", count, arg),
                     Err(e) => state.status_message = format!("Export failed: {}", e),
                 }
@@ -1451,8 +1609,8 @@ fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
             if arg.is_empty() {
                 state.status_message = String::from("Usage: :export-context <file>");
             } else {
-                match crate::fileio::save_context(sheet, arg, false,
-                    0, 0, 0, sheet.dim_x.saturating_sub(1), sheet.dim_y.saturating_sub(1), sheet.dim_z.saturating_sub(1)) {
+                let (x1, y1, z1, x2, y2, z2) = get_export_range(sheet);
+                match crate::fileio::save_context(sheet, arg, false, x1, y1, z1, x2, y2, z2) {
                     Ok(count) => state.status_message = format!("Exported {} cells to {}", count, arg),
                     Err(e) => state.status_message = format!("Export failed: {}", e),
                 }
@@ -1462,8 +1620,8 @@ fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
             if arg.is_empty() {
                 state.status_message = String::from("Usage: :export-csv <file>");
             } else {
-                match crate::fileio::save_csv(sheet, arg, ',',
-                    0, 0, 0, sheet.dim_x.saturating_sub(1), sheet.dim_y.saturating_sub(1), 0) {
+                let (x1, y1, z1, x2, y2, z2) = get_export_range(sheet);
+                match crate::fileio::save_csv(sheet, arg, ',', x1, y1, z1, x2, y2, z2) {
                     Ok(count) => state.status_message = format!("Exported {} cells to {}", count, arg),
                     Err(e) => state.status_message = format!("Export failed: {}", e),
                 }
@@ -1669,9 +1827,8 @@ fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
             if arg.is_empty() {
                 state.status_message = String::from("Usage: :export-text <file>");
             } else {
-                let x2 = sheet.dim_x.saturating_sub(1);
-                let y2 = sheet.dim_y.saturating_sub(1);
-                match crate::fileio::save_text(sheet, arg, 0, 0, 0, x2, y2, 0) {
+                let (x1, y1, z1, x2, y2, _z2) = get_export_range(sheet);
+                match crate::fileio::save_text(sheet, arg, x1, y1, z1, x2, y2, z1) {
                     Ok(count) => {
                         state.status_message = format!("Exported {} cells to {}", count, arg);
                     }
@@ -1937,11 +2094,15 @@ fn ui(f: &mut Frame, sheet: &Sheet, state: &DisplayState) {
     // When cycling refs with g, show the origin cell's formula instead
     let (status_cell_x, status_cell_y, status_cell_z) = state.goto_ref_origin
         .unwrap_or((sheet.cur_x, sheet.cur_y, sheet.cur_z));
-    let coord_str = format!("({},{},{}) ", sheet.cur_x, sheet.cur_y, sheet.cur_z);
+    let cur_label = sheet.get_cell(sheet.cur_x, sheet.cur_y, sheet.cur_z)
+        .and_then(|c| c.label.as_ref())
+        .map(|l| format!(" [{}]", l))
+        .unwrap_or_default();
+    let coord_str = format!("({},{},{}){} ", sheet.cur_x, sheet.cur_y, sheet.cur_z, cur_label);
     let base_style = Style::default().fg(Color::White).bg(Color::Blue);
     let status_spans = if let Some(cell) = sheet.get_cell(status_cell_x, status_cell_y, status_cell_z) {
         if let Some(ref contents) = cell.contents {
-            let refs = extract_cell_refs(contents);
+            let refs = extract_cell_refs_with_sheet(contents, Some(sheet));
             let formula = scanner::print_tokens(contents, true, cell.scientific, cell.precision);
             let mut spans = vec![Span::styled(coord_str, base_style)];
             // Color cell references in the formula string
@@ -2039,7 +2200,7 @@ fn ui(f: &mut Frame, sheet: &Sheet, state: &DisplayState) {
     } else {
     match state.input_mode {
         InputMode::Normal => {
-            let help_text = if state.palette_active || state.sheet_picker_active || state.picker_active {
+            let help_text = if state.palette_active || state.sheet_picker_active || state.picker_active || state.labels_picker_active {
                 " Use arrow keys to navigate, Enter to select, Esc to cancel"
             } else {
                 " hjkl: move | =/': formula/text | 0-9: number | :: command | /: palette | n: search | ?: help"
@@ -2082,6 +2243,9 @@ fn ui(f: &mut Frame, sheet: &Sheet, state: &DisplayState) {
     }
     if state.sheet_picker_active {
         render_sheet_picker(f, sheet, state);
+    }
+    if state.labels_picker_active {
+        render_labels_picker(f, state);
     }
     if state.picker_active {
         render_cell_picker_info(f, state);
@@ -2134,6 +2298,8 @@ fn render_help(f: &mut Frame, area: Rect) {
     :mirror-x/y/z Mirror block          :fill c r [l]  Tile block
     :sheet N      Switch to sheet N     :sheet-add/:sheet-del
     :clock        Toggle cell clock     :clock-run Run clock
+    :label <name> Set/clear cell label  :labels    Label picker
+    :lock         Toggle cell lock      :ignore    Toggle cell ignore
     :search <pat> Search current sheet  :s <pat>   Alias for search
     :search-all   Search all sheets     :search-formula  Search formulas
     :replace <s> <r>  Replace with confirmation  :replace-all <s> <r>
@@ -2167,29 +2333,55 @@ const REF_COLORS: &[Color] = &[
 ];
 
 /// Extract static cell references from a token list.
-/// Returns coordinates for `@(x,y,z)` calls with literal integer args.
-fn extract_cell_refs(tokens: &[Token]) -> Vec<(usize, usize, usize)> {
+/// Returns coordinates for `@(x,y,z)` calls with literal integer args,
+/// `@("label")` calls, and standalone label identifiers.
+fn extract_cell_refs_with_sheet(tokens: &[Token], sheet: Option<&Sheet>) -> Vec<(usize, usize, usize)> {
     let mut refs = Vec::new();
     let mut i = 0;
     while i < tokens.len() {
-        if let Token::Identifier(name) = &tokens[i] {
-            if name == "@"
-                && i + 7 < tokens.len()
-                && tokens[i + 1] == Token::Operator(Operator::OpenParen)
-                && tokens[i + 3] == Token::Operator(Operator::Comma)
-                && tokens[i + 5] == Token::Operator(Operator::Comma)
-                && tokens[i + 7] == Token::Operator(Operator::CloseParen)
-            {
-                if let (Some(x), Some(y), Some(z)) = (
-                    token_to_usize(&tokens[i + 2]),
-                    token_to_usize(&tokens[i + 4]),
-                    token_to_usize(&tokens[i + 6]),
-                ) {
-                    refs.push((x, y, z));
-                    i += 8;
-                    continue;
+        match &tokens[i] {
+            Token::Identifier(name) if name == "@" => {
+                // Check for @(x,y,z) with literal args
+                if i + 7 < tokens.len()
+                    && tokens[i + 1] == Token::Operator(Operator::OpenParen)
+                    && tokens[i + 3] == Token::Operator(Operator::Comma)
+                    && tokens[i + 5] == Token::Operator(Operator::Comma)
+                    && tokens[i + 7] == Token::Operator(Operator::CloseParen)
+                {
+                    if let (Some(x), Some(y), Some(z)) = (
+                        token_to_usize(&tokens[i + 2]),
+                        token_to_usize(&tokens[i + 4]),
+                        token_to_usize(&tokens[i + 6]),
+                    ) {
+                        refs.push((x, y, z));
+                        i += 8;
+                        continue;
+                    }
+                }
+                // Check for @("label") with string arg
+                if let Some(sheet) = sheet {
+                    if i + 3 < tokens.len()
+                        && tokens[i + 1] == Token::Operator(Operator::OpenParen)
+                        && tokens[i + 3] == Token::Operator(Operator::CloseParen)
+                    {
+                        if let Token::String(label) = &tokens[i + 2] {
+                            if let Some(loc) = sheet.findlabel_location(label) {
+                                refs.push(loc);
+                                i += 4;
+                                continue;
+                            }
+                        }
+                    }
                 }
             }
+            Token::LabelIdentifier(name) => {
+                if let Some(sheet) = sheet {
+                    if let Some(loc) = sheet.findlabel_location(name) {
+                        refs.push(loc);
+                    }
+                }
+            }
+            _ => {}
         }
         i += 1;
     }
@@ -2214,7 +2406,7 @@ fn find_dependents(sheet: &Sheet, tx: usize, ty: usize, tz: usize) -> Vec<(usize
     let mut deps = Vec::new();
     for (&(cx, cy, cz), cell) in sheet.cells() {
         if let Some(ref contents) = cell.contents {
-            let refs = extract_cell_refs(contents);
+            let refs = extract_cell_refs_with_sheet(contents, Some(sheet));
             if refs.contains(&(tx, ty, tz)) {
                 deps.push((cx, cy, cz));
             }
@@ -2265,7 +2457,7 @@ fn render_sheet(f: &mut Frame, sheet: &Sheet, state: &DisplayState, area: Rect) 
     let cur_refs: Vec<(usize, usize, usize)> = sheet
         .get_cell(ref_source_x, ref_source_y, ref_source_z)
         .and_then(|c| c.contents.as_ref())
-        .map(|tokens| extract_cell_refs(tokens))
+        .map(|tokens| extract_cell_refs_with_sheet(tokens, Some(sheet)))
         .unwrap_or_default();
 
     // Dependents: always show for focused cell; use d-cycle origin if active
@@ -2304,6 +2496,10 @@ fn render_sheet(f: &mut Frame, sheet: &Sheet, state: &DisplayState, area: Rect) 
             let ref_index = cur_refs.iter().position(|&(rx, ry, rz)| rx == x && ry == y && rz == z);
             let dep_index = cur_deps.iter().position(|&(dx, dy, dz)| dx == x && dy == y && dz == z);
 
+            let has_label = cell_data
+                .and_then(|c| c.label.as_ref())
+                .is_some();
+
             let style = if is_picker {
                 Style::default().fg(Color::Black).bg(Color::Green)
             } else if x == sheet.cur_x && y == sheet.cur_y {
@@ -2324,6 +2520,8 @@ fn render_sheet(f: &mut Frame, sheet: &Sheet, state: &DisplayState, area: Rect) 
                 Style::default().fg(Color::Black).bg(Color::Yellow)
             } else if in_mark {
                 Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else if has_label {
+                Style::default().fg(Color::Green)
             } else if has_formula {
                 Style::default().bg(Color::Rgb(20, 30, 40))
             } else {
@@ -2412,6 +2610,38 @@ fn render_sheet_picker(f: &mut Frame, sheet: &Sheet, state: &DisplayState) {
 
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title("Sheets").style(Style::default().bg(Color::DarkGray)));
+
+    f.render_widget(list, popup_area);
+}
+
+/// Render the labels picker popup
+fn render_labels_picker(f: &mut Frame, state: &DisplayState) {
+    let area = f.area();
+    let count = state.labels_picker_items.len();
+    let height = (count as u16 + 2).min(area.height.saturating_sub(4)).max(3);
+    let width = 40u16.min(area.width.saturating_sub(4));
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let popup_area = Rect::new(x, y, width, height);
+
+    f.render_widget(Clear, popup_area);
+
+    let items: Vec<ListItem> = state.labels_picker_items.iter()
+        .enumerate()
+        .take(height.saturating_sub(2) as usize)
+        .map(|(i, (name, lx, ly, lz))| {
+            let style = if i == state.labels_picker_selection {
+                Style::default().fg(Color::Black).bg(Color::Yellow)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(Line::from(Span::styled(
+                format!(" {} ({},{},{})", name, lx, ly, lz), style)))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title("Labels").style(Style::default().bg(Color::DarkGray)));
 
     f.render_widget(list, popup_area);
 }

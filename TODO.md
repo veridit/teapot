@@ -28,7 +28,8 @@
 - [x] Block operations: mark, copy, move, clear, sort, yank/paste
 - [x] Insert/delete rows and columns
 - [x] Column width adjustment (+/-)
-- [x] Cell formatting: alignment, precision, bold, underline
+- [x] Cell formatting: alignment, precision, bold, underline, lock, ignore
+- [x] Block-scoped formatting (applies to marked block when set)
 - [x] Undo/redo (50 levels)
 - [x] Batch mode (stdin commands)
 - [x] Help screen (?)
@@ -46,6 +47,10 @@
 - [x] Clocked cells — three-phase commit (C key, :clock, :clock-run)
 - [x] Command palette (/ or F1) with fuzzy filtering
 - [x] Search/replace with regex (n/N navigate, :search, :replace, y/n/a/q confirmation)
+- [x] Cell reference and dependency highlighting (g/d/r keys, colored refs in status bar)
+- [x] Label-based cell references — @("labelName"), :label, :labels picker
+- [x] eval() function — re-evaluates a cell's formula (with recursion protection)
+- [x] Export marked block only (all export commands respect mark range)
 
 ## Remaining Work
 
@@ -62,11 +67,7 @@
 - [ ] Configurable key bindings
 
 ### Missing C Features
-- [ ] Internationalization (message catalogs)
-- [ ] Label-based cell references in formulas (@(NamedCell))
-- [ ] eval() function for formula references
-- [ ] Block-scoped formatting operations
-- [ ] Print/export marked block only
+- [ ] Internationalization (message catalogs) — deferred (C code has no actual translations)
 
 ### Future Ideas
 - [ ] Undo descriptions (show what each undo step reverts)

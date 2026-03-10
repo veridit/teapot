@@ -55,6 +55,18 @@ fn parse_coords(s: &str) -> Option<(usize, usize, usize)> {
     }
 }
 
+/// Get the export range: marked block if set, otherwise full sheet dimensions
+fn get_batch_export_range(sheet: &Sheet) -> (usize, usize, usize, usize, usize, usize) {
+    if let Some(range) = sheet.get_mark_range() {
+        range
+    } else {
+        (0, 0, 0,
+         sheet.dim_x.saturating_sub(1),
+         sheet.dim_y.saturating_sub(1),
+         sheet.dim_z.saturating_sub(1))
+    }
+}
+
 /// Process batch mode commands from stdin
 fn process_batch(sheet: &mut Sheet) -> Result<()> {
     let stdin = io::stdin();
@@ -155,6 +167,88 @@ fn process_batch(sheet: &mut Sheet) -> Result<()> {
                     }
                 } else {
                     eprintln!("precision: expected col precision");
+                }
+            }
+            "bold" => {
+                if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                    for z in z1..=z2 { for y in y1..=y2 { for x in x1..=x2 {
+                        let cell = sheet.get_or_create_cell(x, y, z);
+                        cell.bold = !cell.bold;
+                    }}}
+                } else {
+                    let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
+                    let cell = sheet.get_or_create_cell(x, y, z);
+                    cell.bold = !cell.bold;
+                }
+            }
+            "underline" => {
+                if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                    for z in z1..=z2 { for y in y1..=y2 { for x in x1..=x2 {
+                        let cell = sheet.get_or_create_cell(x, y, z);
+                        cell.underline = !cell.underline;
+                    }}}
+                } else {
+                    let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
+                    let cell = sheet.get_or_create_cell(x, y, z);
+                    cell.underline = !cell.underline;
+                }
+            }
+            "lock" => {
+                if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                    for z in z1..=z2 { for y in y1..=y2 { for x in x1..=x2 {
+                        let cell = sheet.get_or_create_cell(x, y, z);
+                        cell.locked = !cell.locked;
+                    }}}
+                } else {
+                    let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
+                    let cell = sheet.get_or_create_cell(x, y, z);
+                    cell.locked = !cell.locked;
+                }
+            }
+            "ignore" => {
+                if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                    for z in z1..=z2 { for y in y1..=y2 { for x in x1..=x2 {
+                        let cell = sheet.get_or_create_cell(x, y, z);
+                        cell.ignored = !cell.ignored;
+                    }}}
+                } else {
+                    let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
+                    let cell = sheet.get_or_create_cell(x, y, z);
+                    cell.ignored = !cell.ignored;
+                }
+            }
+            "align" => {
+                let adjust = match arg {
+                    "left" | "l" => Some(teapotlib::sheet::Adjust::Left),
+                    "right" | "r" => Some(teapotlib::sheet::Adjust::Right),
+                    "center" | "c" => Some(teapotlib::sheet::Adjust::Center),
+                    "auto" | "a" => Some(teapotlib::sheet::Adjust::AutoAdjust),
+                    _ => { eprintln!("align: expected left|right|center|auto"); None }
+                };
+                if let Some(adjust) = adjust {
+                    if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                        for z in z1..=z2 { for y in y1..=y2 { for x in x1..=x2 {
+                            let cell = sheet.get_or_create_cell(x, y, z);
+                            cell.adjust = adjust;
+                        }}}
+                    } else {
+                        let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
+                        let cell = sheet.get_or_create_cell(x, y, z);
+                        cell.adjust = adjust;
+                    }
+                }
+            }
+            "label" => {
+                let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
+                if arg.is_empty() {
+                    if let Some(cell) = sheet.get_cell_mut(x, y, z) {
+                        cell.label = None;
+                    }
+                    sheet.cachelabels();
+                } else {
+                    let cell = sheet.get_or_create_cell(x, y, z);
+                    cell.label = Some(arg.to_string());
+                    sheet.cachelabels();
                 }
             }
 
@@ -290,30 +384,29 @@ fn process_batch(sheet: &mut Sheet) -> Result<()> {
                 }
             }
             "save-csv" => {
-                let x2 = sheet.dim_x.saturating_sub(1);
-                let y2 = sheet.dim_y.saturating_sub(1);
-                match fileio::save_csv(sheet, arg, ',', 0, 0, 0, x2, y2, 0) {
+                let (x1, y1, z1, x2, y2, z2) = get_batch_export_range(sheet);
+                match fileio::save_csv(sheet, arg, ',', x1, y1, z1, x2, y2, z2) {
                     Ok(_) => {}
                     Err(e) => eprintln!("save-csv: {}", e),
                 }
             }
             "save-html" => {
-                let (x2, y2, z2) = (sheet.dim_x.saturating_sub(1), sheet.dim_y.saturating_sub(1), sheet.dim_z.saturating_sub(1));
-                match fileio::save_html(sheet, arg, false, 0, 0, 0, x2, y2, z2) {
+                let (x1, y1, z1, x2, y2, z2) = get_batch_export_range(sheet);
+                match fileio::save_html(sheet, arg, false, x1, y1, z1, x2, y2, z2) {
                     Ok(_) => {}
                     Err(e) => eprintln!("save-html: {}", e),
                 }
             }
             "save-latex" => {
-                let (x2, y2, z2) = (sheet.dim_x.saturating_sub(1), sheet.dim_y.saturating_sub(1), sheet.dim_z.saturating_sub(1));
-                match fileio::save_latex(sheet, arg, false, 0, 0, 0, x2, y2, z2) {
+                let (x1, y1, z1, x2, y2, z2) = get_batch_export_range(sheet);
+                match fileio::save_latex(sheet, arg, false, x1, y1, z1, x2, y2, z2) {
                     Ok(_) => {}
                     Err(e) => eprintln!("save-latex: {}", e),
                 }
             }
             "save-context" => {
-                let (x2, y2, z2) = (sheet.dim_x.saturating_sub(1), sheet.dim_y.saturating_sub(1), sheet.dim_z.saturating_sub(1));
-                match fileio::save_context(sheet, arg, false, 0, 0, 0, x2, y2, z2) {
+                let (x1, y1, z1, x2, y2, z2) = get_batch_export_range(sheet);
+                match fileio::save_context(sheet, arg, false, x1, y1, z1, x2, y2, z2) {
                     Ok(_) => {}
                     Err(e) => eprintln!("save-context: {}", e),
                 }
@@ -325,9 +418,8 @@ fn process_batch(sheet: &mut Sheet) -> Result<()> {
                 }
             }
             "save-text" => {
-                let x2 = sheet.dim_x.saturating_sub(1);
-                let y2 = sheet.dim_y.saturating_sub(1);
-                match fileio::save_text(sheet, arg, 0, 0, 0, x2, y2, 0) {
+                let (x1, y1, z1, x2, y2, _z2) = get_batch_export_range(sheet);
+                match fileio::save_text(sheet, arg, x1, y1, z1, x2, y2, z1) {
                     Ok(_) => {}
                     Err(e) => eprintln!("save-text: {}", e),
                 }

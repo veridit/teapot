@@ -8,9 +8,11 @@ Teapot was originally written in C by Michael Haardt. This is a full rewrite in 
 
 - **3D spreadsheet** — cells addressed as `@(x, y, z)` across multiple sheet layers
 - **Type-safe formulas** — 41 built-in functions; adding a number and a string is an error, not a silent conversion
+- **Named cells** — label any cell, reference it as `@("labelName")` or just `labelName` in formulas
 - **Clocked expressions** — three-phase iterative evaluation for cellular automata, simulations, and circular dependencies
 - **Multiple file formats** — native `.tp`/`.tpz`, CSV, XLSX, ODS/XLS (read), HTML/LaTeX/ConTeXt (export)
 - **Modern editing** — readline shortcuts, command history, tab completion, cell picker, command palette
+- **Block operations** — mark a range, then format, export, sort, mirror, fill, or copy/move as a block
 - **Batch mode** — scriptable via stdin for automated calculations
 
 ## Quick Start
@@ -58,7 +60,9 @@ See [USAGE.md](USAGE.md) for the full keyboard reference and command list.
 1 + 2 * 3             # arithmetic (= 7)
 @(0,1,0)              # value of cell at column 0, row 1, sheet 0
 @(x()-1, y(), z())    # relative reference (cell to the left)
-sum(0,0,0, 5,0,0)     # sum of cells (0,0,0) through (5,0,0)
+@("total")            # label-based reference
+eval(@(0,0,0))        # re-evaluate a cell's formula
+sum(&(0,0,0), &(5,0,0))  # sum of range (0,0,0) through (5,0,0)
 ```
 
 ## Building

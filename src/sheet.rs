@@ -268,6 +268,11 @@ impl Sheet {
         }
     }
 
+    /// Find the location of a labeled cell (returns coordinates)
+    pub fn findlabel_location(&self, label: &str) -> Option<(usize, usize, usize)> {
+        self.label_cache.get(label).copied()
+    }
+
     /// Rebuild the label cache from all cells
     pub fn cachelabels(&mut self) {
         self.label_cache.clear();
@@ -363,6 +368,11 @@ impl Sheet {
     /// Iterator over all cells
     pub fn cells(&self) -> impl Iterator<Item = (&(usize, usize, usize), &Cell)> {
         self.cells.iter()
+    }
+
+    /// Mutable access to the cells HashMap (for eval() take/put pattern)
+    pub fn cells_mut(&mut self) -> &mut HashMap<(usize, usize, usize), Cell> {
+        &mut self.cells
     }
 
     /// Get all cell coordinates
