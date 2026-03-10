@@ -494,6 +494,50 @@ fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
             sheet.changed = true;
             state.status_message = format!("Alignment: {}", val);
         }
+        "export-html" => {
+            if arg.is_empty() {
+                state.status_message = String::from("Usage: :export-html <file>");
+            } else {
+                match crate::fileio::save_html(sheet, arg, false,
+                    0, 0, 0, sheet.dim_x.saturating_sub(1), sheet.dim_y.saturating_sub(1), sheet.dim_z.saturating_sub(1)) {
+                    Ok(count) => state.status_message = format!("Exported {} cells to {}", count, arg),
+                    Err(e) => state.status_message = format!("Export failed: {}", e),
+                }
+            }
+        }
+        "export-latex" => {
+            if arg.is_empty() {
+                state.status_message = String::from("Usage: :export-latex <file>");
+            } else {
+                match crate::fileio::save_latex(sheet, arg, false,
+                    0, 0, 0, sheet.dim_x.saturating_sub(1), sheet.dim_y.saturating_sub(1), sheet.dim_z.saturating_sub(1)) {
+                    Ok(count) => state.status_message = format!("Exported {} cells to {}", count, arg),
+                    Err(e) => state.status_message = format!("Export failed: {}", e),
+                }
+            }
+        }
+        "export-context" => {
+            if arg.is_empty() {
+                state.status_message = String::from("Usage: :export-context <file>");
+            } else {
+                match crate::fileio::save_context(sheet, arg, false,
+                    0, 0, 0, sheet.dim_x.saturating_sub(1), sheet.dim_y.saturating_sub(1), sheet.dim_z.saturating_sub(1)) {
+                    Ok(count) => state.status_message = format!("Exported {} cells to {}", count, arg),
+                    Err(e) => state.status_message = format!("Export failed: {}", e),
+                }
+            }
+        }
+        "export-csv" => {
+            if arg.is_empty() {
+                state.status_message = String::from("Usage: :export-csv <file>");
+            } else {
+                match crate::fileio::save_csv(sheet, arg, ',',
+                    0, 0, 0, sheet.dim_x.saturating_sub(1), sheet.dim_y.saturating_sub(1), 0) {
+                    Ok(count) => state.status_message = format!("Exported {} cells to {}", count, arg),
+                    Err(e) => state.status_message = format!("Export failed: {}", e),
+                }
+            }
+        }
         "clear" => {
             if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
                 let count = sheet.clear_block(x1, y1, z1, x2, y2, z2);
@@ -648,6 +692,8 @@ fn render_help(f: &mut Frame, area: Rect) {
     :precision N  Set decimal places    :bold  :underline
     :ir/:dr       Insert/delete row     :ic/:dc    Insert/delete col
     :copy         Copy block to cursor  :clear     Clear marked block
+    :export-csv   Export as CSV         :export-html  Export as HTML
+    :export-latex Export as LaTeX       :export-context  Export as ConTeXt
     :help         Show this help
 
   Formulas
