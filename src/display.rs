@@ -2153,7 +2153,9 @@ fn render_cell_picker_info(f: &mut Frame, state: &DisplayState) {
     let info = format!(" Cell picker: @({},{},{})  [arrows to move, Enter to insert, Esc to cancel]",
         state.picker_x, state.picker_y, state.picker_z);
     let popup_area = Rect::new(0, 0, area.width, 1);
+    f.render_widget(Clear, popup_area);
     let widget = Paragraph::new(info)
+        .block(Block::default().style(Style::default().bg(Color::Green)))
         .style(Style::default().fg(Color::Black).bg(Color::Green));
     f.render_widget(widget, popup_area);
 }
