@@ -158,7 +158,7 @@ fn process_batch(sheet: &mut Sheet) -> Result<()> {
             }
 
             // Sort
-            "sort" => {
+            "sort" | "sort-x" => {
                 if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
                     let parts: Vec<&str> = arg.split_whitespace().collect();
                     let sort_col = parts.first()
@@ -171,6 +171,84 @@ fn process_batch(sheet: &mut Sheet) -> Result<()> {
                 } else {
                     eprintln!("sort: no block marked (use from/to first)");
                 }
+            }
+            "sort-y" => {
+                if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                    let parts: Vec<&str> = arg.split_whitespace().collect();
+                    let sort_row = parts.first()
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(sheet.cur_y);
+                    let ascending = parts.get(1)
+                        .map(|s| !s.starts_with('d'))
+                        .unwrap_or(true);
+                    sheet.sort_block_y(x1, y1, z1, x2, y2, z2, sort_row, ascending);
+                } else {
+                    eprintln!("sort-y: no block marked (use from/to first)");
+                }
+            }
+            "sort-z" => {
+                if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                    let parts: Vec<&str> = arg.split_whitespace().collect();
+                    let (sort_x, sort_y) = if let Some(coord) = parts.first() {
+                        let coords: Vec<&str> = coord.split(',').collect();
+                        (
+                            coords.first().and_then(|s| s.parse().ok()).unwrap_or(sheet.cur_x),
+                            coords.get(1).and_then(|s| s.parse().ok()).unwrap_or(sheet.cur_y),
+                        )
+                    } else {
+                        (sheet.cur_x, sheet.cur_y)
+                    };
+                    let ascending = parts.get(1)
+                        .map(|s| !s.starts_with('d'))
+                        .unwrap_or(true);
+                    sheet.sort_block_z(x1, y1, z1, x2, y2, z2, sort_x, sort_y, ascending);
+                } else {
+                    eprintln!("sort-z: no block marked (use from/to first)");
+                }
+            }
+            // Mirror
+            "mirror-x" => {
+                if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                    sheet.mirror_block(x1, y1, z1, x2, y2, z2, teapotlib::sheet::Direction::X);
+                } else {
+                    eprintln!("mirror-x: no block marked");
+                }
+            }
+            "mirror-y" => {
+                if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                    sheet.mirror_block(x1, y1, z1, x2, y2, z2, teapotlib::sheet::Direction::Y);
+                } else {
+                    eprintln!("mirror-y: no block marked");
+                }
+            }
+            "mirror-z" => {
+                if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                    sheet.mirror_block(x1, y1, z1, x2, y2, z2, teapotlib::sheet::Direction::Z);
+                } else {
+                    eprintln!("mirror-z: no block marked");
+                }
+            }
+            // Fill
+            "fill" => {
+                if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                    let parts: Vec<&str> = arg.split_whitespace().collect();
+                    let cols = parts.first().and_then(|s| s.parse::<usize>().ok()).unwrap_or(1);
+                    let rows = parts.get(1).and_then(|s| s.parse::<usize>().ok()).unwrap_or(1);
+                    let layers = parts.get(2).and_then(|s| s.parse::<usize>().ok()).unwrap_or(1);
+                    sheet.fill_block(x1, y1, z1, x2, y2, z2, cols, rows, layers);
+                } else {
+                    eprintln!("fill: no block marked");
+                }
+            }
+            // Clock
+            "clock" => {
+                let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
+                let enabled = sheet.toggle_clock(x, y, z);
+                eprintln!("clock {}", if enabled { "enabled" } else { "disabled" });
+            }
+            "clock-tick" => {
+                let count = sheet.clock_tick();
+                eprintln!("clock tick: {} cells", count);
             }
 
             // Load/save

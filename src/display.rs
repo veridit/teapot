@@ -8,14 +8,28 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::Span,
-    widgets::{Block, Borders, Cell as TuiCell, Paragraph, Row, Table, Tabs},
+    text::{Line, Span},
+    widgets::{Block, Borders, Cell as TuiCell, Clear, List, ListItem, Paragraph, Row, Table, Tabs},
     Frame, Terminal,
 };
 
 use crate::scanner;
 use crate::sheet::Sheet;
 use crate::token::Token;
+
+/// All known commands for completion and palette
+const COMMANDS: &[&str] = &[
+    "q", "quit", "q!", "wq", "w", "write", "goto", "o", "open",
+    "width", "precision", "bold", "underline", "align",
+    "export-html", "export-latex", "export-context", "export-csv", "export-text",
+    "clear", "copy", "move", "ir", "insert-row", "dr", "delete-row",
+    "ic", "insert-col", "dc", "delete-col", "sort", "sort-x", "sort-y", "sort-z",
+    "mirror-x", "mirror-y", "mirror-z", "fill",
+    "undo", "redo", "yank", "paste", "help",
+    "sheet", "sheet-add", "sheet-del", "sheets",
+    "clock", "clock-run",
+    "save-text",
+];
 
 struct DisplayState {
     status_message: String,
@@ -24,8 +38,30 @@ struct DisplayState {
     cursor_position: usize,
     terminal_area: Rect,
     should_quit: bool,
+    // Text editing: auto-wrap in quotes on commit
+    text_editing: bool,
+    // Command history
+    command_history: Vec<String>,
+    history_index: Option<usize>,
+    history_stash: String,
+    // Command completion
+    completion_matches: Vec<String>,
+    completion_index: usize,
+    // Cell picker
+    picker_x: usize,
+    picker_y: usize,
+    picker_z: usize,
+    picker_active: bool,
+    // Sheet picker
+    sheet_picker_active: bool,
+    sheet_picker_selection: usize,
+    // Command palette
+    palette_active: bool,
+    palette_filter: String,
+    palette_selection: usize,
 }
 
+#[derive(PartialEq)]
 enum InputMode {
     Normal,
     Editing,
@@ -42,7 +78,130 @@ impl Default for DisplayState {
             cursor_position: 0,
             terminal_area: Rect::default(),
             should_quit: false,
+            text_editing: false,
+            command_history: Vec::new(),
+            history_index: None,
+            history_stash: String::new(),
+            completion_matches: Vec::new(),
+            completion_index: 0,
+            picker_x: 0,
+            picker_y: 0,
+            picker_z: 0,
+            picker_active: false,
+            sheet_picker_active: false,
+            sheet_picker_selection: 0,
+            palette_active: false,
+            palette_filter: String::new(),
+            palette_selection: 0,
         }
+    }
+}
+
+/// Insert a character at the cursor position in the input buffer
+fn buffer_insert(buf: &mut String, pos: &mut usize, c: char) {
+    if *pos >= buf.len() {
+        buf.push(c);
+    } else {
+        buf.insert(*pos, c);
+    }
+    *pos += 1;
+}
+
+/// Delete a character before the cursor (backspace)
+fn buffer_backspace(buf: &mut String, pos: &mut usize) {
+    if *pos > 0 && !buf.is_empty() {
+        *pos -= 1;
+        if *pos < buf.len() {
+            buf.remove(*pos);
+        }
+    }
+}
+
+/// Delete a character at the cursor (delete key)
+fn buffer_delete(buf: &mut String, pos: usize) {
+    if pos < buf.len() {
+        buf.remove(pos);
+    }
+}
+
+/// Delete word backwards (Ctrl+W)
+fn buffer_kill_word_back(buf: &mut String, pos: &mut usize) {
+    if *pos == 0 { return; }
+    // Skip trailing spaces
+    let mut new_pos = *pos;
+    while new_pos > 0 && buf.as_bytes().get(new_pos - 1) == Some(&b' ') {
+        new_pos -= 1;
+    }
+    // Skip word chars
+    while new_pos > 0 && buf.as_bytes().get(new_pos - 1) != Some(&b' ') {
+        new_pos -= 1;
+    }
+    buf.drain(new_pos..*pos);
+    *pos = new_pos;
+}
+
+/// Kill to end of line (Ctrl+K)
+fn buffer_kill_to_end(buf: &mut String, pos: usize) {
+    buf.truncate(pos);
+}
+
+/// Handle readline-style shortcuts common to Editing and Command modes.
+/// Returns true if the key was handled.
+fn handle_readline(key: &crossterm::event::KeyEvent, buf: &mut String, pos: &mut usize, min_pos: usize) -> bool {
+    match key.code {
+        KeyCode::Left | KeyCode::Char('b') if key.code == KeyCode::Left || key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if *pos > min_pos { *pos -= 1; }
+            true
+        }
+        KeyCode::Right | KeyCode::Char('f') if key.code == KeyCode::Right || key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if *pos < buf.len() { *pos += 1; }
+            true
+        }
+        KeyCode::Home => {
+            *pos = min_pos;
+            true
+        }
+        KeyCode::End => {
+            *pos = buf.len();
+            true
+        }
+        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            *pos = min_pos;
+            true
+        }
+        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            *pos = buf.len();
+            true
+        }
+        KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            buffer_kill_to_end(buf, *pos);
+            true
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            let kill_start = min_pos;
+            buf.drain(kill_start..*pos);
+            *pos = kill_start;
+            true
+        }
+        KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Don't kill back past min_pos
+            let old_pos = *pos;
+            buffer_kill_word_back(buf, pos);
+            if *pos < min_pos { *pos = min_pos; }
+            let _ = old_pos; // suppress warning
+            true
+        }
+        KeyCode::Delete => {
+            buffer_delete(buf, *pos);
+            true
+        }
+        KeyCode::Backspace => {
+            if *pos > min_pos {
+                buffer_backspace(buf, pos);
+            }
+            true
+        }
+        _ => false,
     }
 }
 
@@ -139,6 +298,48 @@ fn adjust_viewport(sheet: &mut Sheet, area: Rect) {
     }
 }
 
+/// Commit editing buffer to the sheet cell
+fn commit_edit(sheet: &mut Sheet, state: &mut DisplayState) {
+    sheet.save_undo();
+    let mut input = state.input_buffer.trim().to_string();
+    let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
+
+    // Text editing mode: wrap in quotes
+    if state.text_editing && !input.is_empty() {
+        input = format!("\"{}\"", input);
+    }
+
+    if input.is_empty() {
+        if let Some(cell) = sheet.get_cell_mut(x, y, z) {
+            cell.contents = None;
+            cell.value = Token::Empty;
+        }
+        state.status_message = format!("Cell ({},{},{}) cleared", x, y, z);
+    } else {
+        match scanner::scan(&input) {
+            Ok(tokens) => {
+                sheet.putcont(x, y, z, tokens);
+                // Set left alignment for text editing
+                if state.text_editing {
+                    if let Some(cell) = sheet.get_cell_mut(x, y, z) {
+                        cell.adjust = crate::sheet::Adjust::Left;
+                    }
+                }
+                sheet.update();
+                let val = sheet.get_cell(x, y, z)
+                    .map(|c| format!("{}", c.value))
+                    .unwrap_or_default();
+                state.status_message = format!("({},{},{}) = {}", x, y, z, val);
+            }
+            Err(e) => {
+                state.status_message = format!("Parse error: {}", e);
+            }
+        }
+    }
+    state.text_editing = false;
+    state.input_mode = InputMode::Normal;
+}
+
 fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     sheet: &mut Sheet,
@@ -151,238 +352,27 @@ fn run_app(
         })?;
 
         if let Event::Key(key) = event::read()? {
+            // Handle palette mode first (overlays everything)
+            if state.palette_active {
+                handle_palette(key, sheet, state);
+                continue;
+            }
+            // Handle sheet picker
+            if state.sheet_picker_active {
+                handle_sheet_picker(key, sheet, state);
+                continue;
+            }
+            // Handle cell picker
+            if state.picker_active {
+                handle_cell_picker(key, sheet, state);
+                continue;
+            }
+
             match state.input_mode {
-                InputMode::Normal => {
-                    match key.code {
-                        KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            return Ok(());
-                        }
-                        KeyCode::Char('z') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            if sheet.undo() {
-                                state.status_message = String::from("Undone");
-                            } else {
-                                state.status_message = String::from("Nothing to undo");
-                            }
-                        }
-                        KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            if sheet.redo() {
-                                state.status_message = String::from("Redone");
-                            } else {
-                                state.status_message = String::from("Nothing to redo");
-                            }
-                        }
-                        KeyCode::Char('e') | KeyCode::Enter => {
-                            state.input_mode = InputMode::Editing;
-                            state.input_buffer.clear();
-                            // Pre-fill with current cell formula
-                            if let Some(cell) = sheet.get_cell(sheet.cur_x, sheet.cur_y, sheet.cur_z) {
-                                if let Some(ref contents) = cell.contents {
-                                    state.input_buffer = scanner::print_tokens(contents, true, cell.scientific, cell.precision);
-                                }
-                            }
-                            state.cursor_position = state.input_buffer.len();
-                        }
-                        KeyCode::Char(':') => {
-                            state.input_mode = InputMode::Command;
-                            state.input_buffer.clear();
-                            state.input_buffer.push(':');
-                            state.cursor_position = 1;
-                        }
-                        KeyCode::Char('k') | KeyCode::Up => {
-                            if sheet.cur_y > 0 { sheet.cur_y -= 1; }
-                        }
-                        KeyCode::Char('j') | KeyCode::Down => {
-                            sheet.cur_y += 1;
-                        }
-                        KeyCode::Char('h') | KeyCode::Left => {
-                            if sheet.cur_x > 0 { sheet.cur_x -= 1; }
-                        }
-                        KeyCode::Char('l') | KeyCode::Right => {
-                            sheet.cur_x += 1;
-                        }
-                        KeyCode::Char('K') => {
-                            let page = visible_rows(state.terminal_area);
-                            sheet.cur_y = sheet.cur_y.saturating_sub(page);
-                        }
-                        KeyCode::Char('J') => {
-                            let page = visible_rows(state.terminal_area);
-                            sheet.cur_y += page;
-                        }
-                        KeyCode::Char('H') => {
-                            let page = visible_cols(sheet, state.terminal_area);
-                            sheet.cur_x = sheet.cur_x.saturating_sub(page);
-                        }
-                        KeyCode::Char('L') => {
-                            let page = visible_cols(sheet, state.terminal_area);
-                            sheet.cur_x += page;
-                        }
-                        KeyCode::Tab => {
-                            if sheet.cur_z + 1 < sheet.dim_z {
-                                sheet.cur_z += 1;
-                            } else {
-                                sheet.cur_z = 0;
-                            }
-                        }
-                        KeyCode::Char('?') => {
-                            state.input_mode = InputMode::Help;
-                        }
-                        KeyCode::Char('+') | KeyCode::Char('=') => {
-                            let w = sheet.column_width(sheet.cur_x, sheet.cur_z);
-                            sheet.set_width(sheet.cur_x, sheet.cur_z, w + 1);
-                            sheet.changed = true;
-                            state.status_message = format!("Column {} width: {}", sheet.cur_x, w + 1);
-                        }
-                        KeyCode::Char('-') => {
-                            let w = sheet.column_width(sheet.cur_x, sheet.cur_z);
-                            if w > 1 {
-                                sheet.set_width(sheet.cur_x, sheet.cur_z, w - 1);
-                                sheet.changed = true;
-                                state.status_message = format!("Column {} width: {}", sheet.cur_x, w - 1);
-                            }
-                        }
-                        KeyCode::Char('m') => {
-                            if !sheet.marking {
-                                // Set mark1
-                                sheet.mark1_x = Some(sheet.cur_x);
-                                sheet.mark1_y = Some(sheet.cur_y);
-                                sheet.mark1_z = Some(sheet.cur_z);
-                                sheet.marking = true;
-                                state.status_message = format!("Mark1 set at ({},{},{}). Move and press m again.",
-                                    sheet.cur_x, sheet.cur_y, sheet.cur_z);
-                            } else {
-                                // Set mark2
-                                sheet.mark2_x = Some(sheet.cur_x);
-                                sheet.mark2_y = Some(sheet.cur_y);
-                                sheet.mark2_z = Some(sheet.cur_z);
-                                sheet.marking = false;
-                                state.status_message = format!("Block marked ({},{},{}) to ({},{},{})",
-                                    sheet.mark1_x.unwrap_or(0), sheet.mark1_y.unwrap_or(0), sheet.mark1_z.unwrap_or(0),
-                                    sheet.cur_x, sheet.cur_y, sheet.cur_z);
-                            }
-                        }
-                        KeyCode::Char('u') => {
-                            sheet.clear_mark();
-                            state.status_message = String::from("Mark cleared");
-                        }
-                        KeyCode::Char('y') => {
-                            let count = sheet.yank_block();
-                            if count > 0 {
-                                state.status_message = format!("Yanked {} cells", count);
-                            } else {
-                                state.status_message = String::from("No block marked to yank");
-                            }
-                        }
-                        KeyCode::Char('p') => {
-                            if sheet.clipboard.is_empty() {
-                                state.status_message = String::from("Clipboard empty");
-                            } else {
-                                let count = sheet.paste();
-                                state.status_message = format!("Pasted {} cells", count);
-                            }
-                        }
-                        KeyCode::Home => {
-                            sheet.cur_x = 0;
-                            sheet.cur_y = 0;
-                        }
-                        KeyCode::End => {
-                            sheet.cur_x = sheet.dim_x.saturating_sub(1);
-                            sheet.cur_y = sheet.dim_y.saturating_sub(1);
-                        }
-                        KeyCode::PageUp => {
-                            let page = visible_rows(state.terminal_area);
-                            sheet.cur_y = sheet.cur_y.saturating_sub(page);
-                        }
-                        KeyCode::PageDown => {
-                            let page = visible_rows(state.terminal_area);
-                            sheet.cur_y += page;
-                        }
-                        KeyCode::Delete => {
-                            // Clear current cell
-                            sheet.save_undo();
-                            let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
-                            if let Some(cell) = sheet.get_cell_mut(x, y, z) {
-                                cell.contents = None;
-                                cell.value = Token::Empty;
-                                sheet.changed = true;
-                            }
-                            state.status_message = format!("Cell ({},{},{}) cleared", x, y, z);
-                        }
-                        _ => {}
-                    }
-                    adjust_viewport(sheet, state.terminal_area);
-                }
-                InputMode::Editing => {
-                    match key.code {
-                        KeyCode::Enter => {
-                            sheet.save_undo();
-                            let input = state.input_buffer.trim().to_string();
-                            let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
-                            if input.is_empty() {
-                                // Clear the cell
-                                if let Some(cell) = sheet.get_cell_mut(x, y, z) {
-                                    cell.contents = None;
-                                    cell.value = Token::Empty;
-                                }
-                                state.status_message = format!("Cell ({},{},{}) cleared", x, y, z);
-                            } else {
-                                match scanner::scan(&input) {
-                                    Ok(tokens) => {
-                                        sheet.putcont(x, y, z, tokens);
-                                        sheet.update();
-                                        let val = sheet.get_cell(x, y, z)
-                                            .map(|c| format!("{}", c.value))
-                                            .unwrap_or_default();
-                                        state.status_message = format!("({},{},{}) = {}", x, y, z, val);
-                                    }
-                                    Err(e) => {
-                                        state.status_message = format!("Parse error: {}", e);
-                                    }
-                                }
-                            }
-                            state.input_mode = InputMode::Normal;
-                        }
-                        KeyCode::Esc => {
-                            state.input_mode = InputMode::Normal;
-                        }
-                        KeyCode::Char(c) => {
-                            state.input_buffer.push(c);
-                            state.cursor_position += 1;
-                        }
-                        KeyCode::Backspace => {
-                            if !state.input_buffer.is_empty() {
-                                state.input_buffer.pop();
-                                state.cursor_position = state.cursor_position.saturating_sub(1);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                InputMode::Command => {
-                    match key.code {
-                        KeyCode::Enter => {
-                            process_command(sheet, state);
-                            if !matches!(state.input_mode, InputMode::Help) {
-                                state.input_mode = InputMode::Normal;
-                            }
-                        }
-                        KeyCode::Esc => {
-                            state.input_mode = InputMode::Normal;
-                        }
-                        KeyCode::Char(c) => {
-                            state.input_buffer.push(c);
-                            state.cursor_position += 1;
-                        }
-                        KeyCode::Backspace => {
-                            if state.cursor_position > 1 {
-                                state.input_buffer.pop();
-                                state.cursor_position -= 1;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
+                InputMode::Normal => handle_normal(key, sheet, state),
+                InputMode::Editing => handle_editing(key, sheet, state),
+                InputMode::Command => handle_command(key, sheet, state),
                 InputMode::Help => {
-                    // Any key exits help
                     state.input_mode = InputMode::Normal;
                 }
             }
@@ -391,6 +381,474 @@ fn run_app(
             return Ok(());
         }
     }
+}
+
+fn handle_normal(key: crossterm::event::KeyEvent, sheet: &mut Sheet, state: &mut DisplayState) {
+    match key.code {
+        KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.should_quit = true;
+            return;
+        }
+        KeyCode::Char('z') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if sheet.undo() {
+                state.status_message = String::from("Undone");
+            } else {
+                state.status_message = String::from("Nothing to undo");
+            }
+        }
+        KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if sheet.redo() {
+                state.status_message = String::from("Redone");
+            } else {
+                state.status_message = String::from("Nothing to redo");
+            }
+        }
+        // Smart entry: = for formula
+        KeyCode::Char('=') => {
+            state.input_mode = InputMode::Editing;
+            state.text_editing = false;
+            state.input_buffer.clear();
+            state.cursor_position = 0;
+        }
+        // Smart entry: ' for text
+        KeyCode::Char('\'') => {
+            state.input_mode = InputMode::Editing;
+            state.text_editing = true;
+            state.input_buffer.clear();
+            state.cursor_position = 0;
+        }
+        // Smart entry: digits for quick number entry
+        KeyCode::Char(c @ '0'..='9') => {
+            state.input_mode = InputMode::Editing;
+            state.text_editing = false;
+            state.input_buffer.clear();
+            state.input_buffer.push(c);
+            state.cursor_position = 1;
+        }
+        KeyCode::Char('e') | KeyCode::Enter => {
+            state.input_mode = InputMode::Editing;
+            state.text_editing = false;
+            state.input_buffer.clear();
+            // Pre-fill with current cell formula
+            if let Some(cell) = sheet.get_cell(sheet.cur_x, sheet.cur_y, sheet.cur_z) {
+                if let Some(ref contents) = cell.contents {
+                    state.input_buffer = scanner::print_tokens(contents, true, cell.scientific, cell.precision);
+                }
+            }
+            state.cursor_position = state.input_buffer.len();
+        }
+        KeyCode::Char(':') => {
+            state.input_mode = InputMode::Command;
+            state.input_buffer.clear();
+            state.input_buffer.push(':');
+            state.cursor_position = 1;
+            state.history_index = None;
+            state.completion_matches.clear();
+        }
+        // Command palette
+        KeyCode::Char('/') | KeyCode::F(1) => {
+            state.palette_active = true;
+            state.palette_filter.clear();
+            state.palette_selection = 0;
+        }
+        // Navigation
+        KeyCode::Char('k') | KeyCode::Up => {
+            if sheet.cur_y > 0 { sheet.cur_y -= 1; }
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            sheet.cur_y += 1;
+        }
+        KeyCode::Char('h') | KeyCode::Left => {
+            if sheet.cur_x > 0 { sheet.cur_x -= 1; }
+        }
+        KeyCode::Char('l') | KeyCode::Right => {
+            sheet.cur_x += 1;
+        }
+        KeyCode::Char('K') => {
+            let page = visible_rows(state.terminal_area);
+            sheet.cur_y = sheet.cur_y.saturating_sub(page);
+        }
+        KeyCode::Char('J') => {
+            let page = visible_rows(state.terminal_area);
+            sheet.cur_y += page;
+        }
+        KeyCode::Char('H') => {
+            let page = visible_cols(sheet, state.terminal_area);
+            sheet.cur_x = sheet.cur_x.saturating_sub(page);
+        }
+        KeyCode::Char('L') => {
+            let page = visible_cols(sheet, state.terminal_area);
+            sheet.cur_x += page;
+        }
+        // Sheet navigation
+        KeyCode::Tab => {
+            if sheet.cur_z + 1 < sheet.dim_z {
+                sheet.cur_z += 1;
+            } else {
+                sheet.cur_z = 0;
+            }
+        }
+        KeyCode::Char('[') => {
+            if sheet.cur_z > 0 { sheet.cur_z -= 1; }
+        }
+        KeyCode::Char(']') => {
+            if sheet.cur_z + 1 < sheet.dim_z { sheet.cur_z += 1; }
+        }
+        KeyCode::Char('Z') => {
+            // Sheet picker
+            state.sheet_picker_active = true;
+            state.sheet_picker_selection = sheet.cur_z;
+        }
+        KeyCode::Char('?') => {
+            state.input_mode = InputMode::Help;
+        }
+        KeyCode::Char('+') => {
+            let w = sheet.column_width(sheet.cur_x, sheet.cur_z);
+            sheet.set_width(sheet.cur_x, sheet.cur_z, w + 1);
+            sheet.changed = true;
+            state.status_message = format!("Column {} width: {}", sheet.cur_x, w + 1);
+        }
+        KeyCode::Char('-') => {
+            let w = sheet.column_width(sheet.cur_x, sheet.cur_z);
+            if w > 1 {
+                sheet.set_width(sheet.cur_x, sheet.cur_z, w - 1);
+                sheet.changed = true;
+                state.status_message = format!("Column {} width: {}", sheet.cur_x, w - 1);
+            }
+        }
+        KeyCode::Char('m') => {
+            if !sheet.marking {
+                sheet.mark1_x = Some(sheet.cur_x);
+                sheet.mark1_y = Some(sheet.cur_y);
+                sheet.mark1_z = Some(sheet.cur_z);
+                sheet.marking = true;
+                state.status_message = format!("Mark1 set at ({},{},{}). Move and press m again.",
+                    sheet.cur_x, sheet.cur_y, sheet.cur_z);
+            } else {
+                sheet.mark2_x = Some(sheet.cur_x);
+                sheet.mark2_y = Some(sheet.cur_y);
+                sheet.mark2_z = Some(sheet.cur_z);
+                sheet.marking = false;
+                state.status_message = format!("Block marked ({},{},{}) to ({},{},{})",
+                    sheet.mark1_x.unwrap_or(0), sheet.mark1_y.unwrap_or(0), sheet.mark1_z.unwrap_or(0),
+                    sheet.cur_x, sheet.cur_y, sheet.cur_z);
+            }
+        }
+        KeyCode::Char('u') => {
+            sheet.clear_mark();
+            state.status_message = String::from("Mark cleared");
+        }
+        KeyCode::Char('y') => {
+            let count = sheet.yank_block();
+            if count > 0 {
+                state.status_message = format!("Yanked {} cells", count);
+            } else {
+                state.status_message = String::from("No block marked to yank");
+            }
+        }
+        KeyCode::Char('p') => {
+            if sheet.clipboard.is_empty() {
+                state.status_message = String::from("Clipboard empty");
+            } else {
+                let count = sheet.paste();
+                state.status_message = format!("Pasted {} cells", count);
+            }
+        }
+        // Clock tick
+        KeyCode::Char('C') => {
+            let count = sheet.clock_tick();
+            if count > 0 {
+                state.status_message = format!("Clock tick: {} cells updated", count);
+            } else {
+                state.status_message = String::from("No clocked cells");
+            }
+        }
+        KeyCode::Home => {
+            sheet.cur_x = 0;
+            sheet.cur_y = 0;
+        }
+        KeyCode::End => {
+            sheet.cur_x = sheet.dim_x.saturating_sub(1);
+            sheet.cur_y = sheet.dim_y.saturating_sub(1);
+        }
+        KeyCode::PageUp => {
+            let page = visible_rows(state.terminal_area);
+            sheet.cur_y = sheet.cur_y.saturating_sub(page);
+        }
+        KeyCode::PageDown => {
+            let page = visible_rows(state.terminal_area);
+            sheet.cur_y += page;
+        }
+        KeyCode::Delete => {
+            sheet.save_undo();
+            let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
+            if let Some(cell) = sheet.get_cell_mut(x, y, z) {
+                cell.contents = None;
+                cell.value = Token::Empty;
+                sheet.changed = true;
+            }
+            state.status_message = format!("Cell ({},{},{}) cleared", x, y, z);
+        }
+        _ => {}
+    }
+    adjust_viewport(sheet, state.terminal_area);
+}
+
+fn handle_editing(key: crossterm::event::KeyEvent, sheet: &mut Sheet, state: &mut DisplayState) {
+    match key.code {
+        KeyCode::Enter => {
+            commit_edit(sheet, state);
+        }
+        KeyCode::Esc => {
+            state.text_editing = false;
+            state.input_mode = InputMode::Normal;
+        }
+        // @ triggers cell picker
+        KeyCode::Char('@') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Enter cell picker mode
+            state.picker_active = true;
+            state.picker_x = sheet.cur_x;
+            state.picker_y = sheet.cur_y;
+            state.picker_z = sheet.cur_z;
+        }
+        _ => {
+            // Try readline shortcuts first (min_pos = 0 for editing)
+            if !handle_readline(&key, &mut state.input_buffer, &mut state.cursor_position, 0) {
+                // Regular character input
+                if let KeyCode::Char(c) = key.code {
+                    if !key.modifiers.contains(KeyModifiers::CONTROL) {
+                        buffer_insert(&mut state.input_buffer, &mut state.cursor_position, c);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn handle_command(key: crossterm::event::KeyEvent, sheet: &mut Sheet, state: &mut DisplayState) {
+    match key.code {
+        KeyCode::Enter => {
+            let cmd_str = state.input_buffer.clone();
+            // Push to history if non-empty and not just ":"
+            if cmd_str.len() > 1 {
+                // Don't duplicate last entry
+                if state.command_history.last().map(|s| s.as_str()) != Some(&cmd_str) {
+                    state.command_history.push(cmd_str);
+                    if state.command_history.len() > 100 {
+                        state.command_history.remove(0);
+                    }
+                }
+            }
+            state.history_index = None;
+            state.completion_matches.clear();
+            process_command(sheet, state);
+            if state.input_mode != InputMode::Help {
+                state.input_mode = InputMode::Normal;
+            }
+        }
+        KeyCode::Esc => {
+            state.history_index = None;
+            state.completion_matches.clear();
+            state.input_mode = InputMode::Normal;
+        }
+        // History navigation
+        KeyCode::Up => {
+            if state.command_history.is_empty() { return; }
+            match state.history_index {
+                None => {
+                    state.history_stash = state.input_buffer.clone();
+                    let idx = state.command_history.len() - 1;
+                    state.history_index = Some(idx);
+                    state.input_buffer = state.command_history[idx].clone();
+                    state.cursor_position = state.input_buffer.len();
+                }
+                Some(idx) if idx > 0 => {
+                    let idx = idx - 1;
+                    state.history_index = Some(idx);
+                    state.input_buffer = state.command_history[idx].clone();
+                    state.cursor_position = state.input_buffer.len();
+                }
+                _ => {}
+            }
+        }
+        KeyCode::Down => {
+            if let Some(idx) = state.history_index {
+                if idx + 1 < state.command_history.len() {
+                    let idx = idx + 1;
+                    state.history_index = Some(idx);
+                    state.input_buffer = state.command_history[idx].clone();
+                    state.cursor_position = state.input_buffer.len();
+                } else {
+                    state.history_index = None;
+                    state.input_buffer = state.history_stash.clone();
+                    state.cursor_position = state.input_buffer.len();
+                }
+            }
+        }
+        // Tab completion
+        KeyCode::Tab => {
+            let prefix = state.input_buffer.trim_start_matches(':');
+            if state.completion_matches.is_empty() {
+                // Build matches
+                state.completion_matches = COMMANDS.iter()
+                    .filter(|cmd| cmd.starts_with(prefix))
+                    .map(|s| s.to_string())
+                    .collect();
+                state.completion_index = 0;
+            } else {
+                state.completion_index = (state.completion_index + 1) % state.completion_matches.len();
+            }
+            if !state.completion_matches.is_empty() {
+                let completed = &state.completion_matches[state.completion_index];
+                state.input_buffer = format!(":{}", completed);
+                state.cursor_position = state.input_buffer.len();
+                // Show available completions in status
+                let completions: Vec<&str> = state.completion_matches.iter().map(|s| s.as_str()).collect();
+                state.status_message = format!("Completions: {}", completions.join(", "));
+            }
+        }
+        KeyCode::BackTab => {
+            if !state.completion_matches.is_empty() {
+                if state.completion_index == 0 {
+                    state.completion_index = state.completion_matches.len() - 1;
+                } else {
+                    state.completion_index -= 1;
+                }
+                let completed = &state.completion_matches[state.completion_index];
+                state.input_buffer = format!(":{}", completed);
+                state.cursor_position = state.input_buffer.len();
+            }
+        }
+        _ => {
+            // Clear completion on any other key
+            state.completion_matches.clear();
+            // Try readline shortcuts (min_pos = 1 to keep the ':')
+            if !handle_readline(&key, &mut state.input_buffer, &mut state.cursor_position, 1) {
+                if let KeyCode::Char(c) = key.code {
+                    if !key.modifiers.contains(KeyModifiers::CONTROL) {
+                        buffer_insert(&mut state.input_buffer, &mut state.cursor_position, c);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn handle_cell_picker(key: crossterm::event::KeyEvent, sheet: &mut Sheet, state: &mut DisplayState) {
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => {
+            if state.picker_y > 0 { state.picker_y -= 1; }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            state.picker_y += 1;
+        }
+        KeyCode::Left | KeyCode::Char('h') => {
+            if state.picker_x > 0 { state.picker_x -= 1; }
+        }
+        KeyCode::Right | KeyCode::Char('l') => {
+            state.picker_x += 1;
+        }
+        KeyCode::Tab => {
+            // Cycle z in picker
+            if state.picker_z + 1 < sheet.dim_z.max(1) {
+                state.picker_z += 1;
+            } else {
+                state.picker_z = 0;
+            }
+        }
+        KeyCode::Enter => {
+            // Insert @(x,y,z) at cursor
+            let reference = format!("@({},{},{})", state.picker_x, state.picker_y, state.picker_z);
+            for c in reference.chars() {
+                buffer_insert(&mut state.input_buffer, &mut state.cursor_position, c);
+            }
+            state.picker_active = false;
+        }
+        KeyCode::Esc => {
+            state.picker_active = false;
+        }
+        _ => {}
+    }
+    // Keep viewport adjusted for picker position
+    let _ = sheet;
+}
+
+fn handle_sheet_picker(key: crossterm::event::KeyEvent, sheet: &mut Sheet, state: &mut DisplayState) {
+    let max_z = sheet.dim_z.max(1);
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => {
+            if state.sheet_picker_selection > 0 {
+                state.sheet_picker_selection -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if state.sheet_picker_selection + 1 < max_z {
+                state.sheet_picker_selection += 1;
+            }
+        }
+        KeyCode::Enter => {
+            sheet.cur_z = state.sheet_picker_selection;
+            state.sheet_picker_active = false;
+            state.status_message = format!("Switched to Sheet {}", sheet.cur_z + 1);
+        }
+        KeyCode::Esc => {
+            state.sheet_picker_active = false;
+        }
+        _ => {}
+    }
+}
+
+fn handle_palette(key: crossterm::event::KeyEvent, sheet: &mut Sheet, state: &mut DisplayState) {
+    let filtered = get_palette_items(&state.palette_filter);
+    match key.code {
+        KeyCode::Esc => {
+            state.palette_active = false;
+        }
+        KeyCode::Enter => {
+            if let Some(cmd) = filtered.get(state.palette_selection) {
+                state.input_buffer = format!(":{}", cmd);
+                state.cursor_position = state.input_buffer.len();
+                state.palette_active = false;
+                process_command(sheet, state);
+                if state.input_mode != InputMode::Help {
+                    state.input_mode = InputMode::Normal;
+                }
+            } else {
+                state.palette_active = false;
+            }
+        }
+        KeyCode::Up => {
+            if state.palette_selection > 0 {
+                state.palette_selection -= 1;
+            }
+        }
+        KeyCode::Down => {
+            if state.palette_selection + 1 < filtered.len() {
+                state.palette_selection += 1;
+            }
+        }
+        KeyCode::Backspace => {
+            state.palette_filter.pop();
+            state.palette_selection = 0;
+        }
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.palette_filter.push(c);
+            state.palette_selection = 0;
+        }
+        _ => {}
+    }
+}
+
+/// Get filtered palette items (fuzzy substring match)
+fn get_palette_items(filter: &str) -> Vec<&'static str> {
+    if filter.is_empty() {
+        return COMMANDS.to_vec();
+    }
+    let filter_lower = filter.to_lowercase();
+    COMMANDS.iter()
+        .filter(|cmd| cmd.to_lowercase().contains(&filter_lower))
+        .copied()
+        .collect()
 }
 
 /// Save a sheet using the appropriate format based on file extension
@@ -645,9 +1103,8 @@ fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
             sheet.update();
             state.status_message = format!("Deleted column {}", sheet.cur_x);
         }
-        "sort" => {
+        "sort" | "sort-x" => {
             if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
-                // Parse: :sort [col] [asc|desc]
                 let parts: Vec<&str> = arg.split_whitespace().collect();
                 let sort_col = parts.first()
                     .and_then(|s| s.parse::<usize>().ok())
@@ -659,6 +1116,95 @@ fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
                 sheet.sort_block(x1, y1, z1, x2, y2, z2, sort_col, ascending);
                 let dir = if ascending { "ascending" } else { "descending" };
                 state.status_message = format!("Sorted by column {} {}", sort_col, dir);
+            } else {
+                state.status_message = String::from("No block marked. Press m twice to mark a block.");
+            }
+        }
+        "sort-y" => {
+            if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                let parts: Vec<&str> = arg.split_whitespace().collect();
+                let sort_row = parts.first()
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(sheet.cur_y);
+                let ascending = parts.get(1)
+                    .map(|s| !s.starts_with('d'))
+                    .unwrap_or(true);
+                sheet.save_undo();
+                sheet.sort_block_y(x1, y1, z1, x2, y2, z2, sort_row, ascending);
+                let dir = if ascending { "ascending" } else { "descending" };
+                state.status_message = format!("Sorted by row {} {}", sort_row, dir);
+            } else {
+                state.status_message = String::from("No block marked. Press m twice to mark a block.");
+            }
+        }
+        "sort-z" => {
+            if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                let parts: Vec<&str> = arg.split_whitespace().collect();
+                // sort-z expects x,y coords for the sort key
+                let (sort_x, sort_y) = if let Some(coord) = parts.first() {
+                    let coords: Vec<&str> = coord.split(',').collect();
+                    (
+                        coords.first().and_then(|s| s.parse().ok()).unwrap_or(sheet.cur_x),
+                        coords.get(1).and_then(|s| s.parse().ok()).unwrap_or(sheet.cur_y),
+                    )
+                } else {
+                    (sheet.cur_x, sheet.cur_y)
+                };
+                let ascending = parts.get(1)
+                    .map(|s| !s.starts_with('d'))
+                    .unwrap_or(true);
+                sheet.save_undo();
+                sheet.sort_block_z(x1, y1, z1, x2, y2, z2, sort_x, sort_y, ascending);
+                let dir = if ascending { "ascending" } else { "descending" };
+                state.status_message = format!("Sorted layers by ({},{}) {}", sort_x, sort_y, dir);
+            } else {
+                state.status_message = String::from("No block marked. Press m twice to mark a block.");
+            }
+        }
+        "mirror-x" => {
+            if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                sheet.save_undo();
+                sheet.mirror_block(x1, y1, z1, x2, y2, z2, crate::sheet::Direction::X);
+                sheet.clear_mark();
+                state.status_message = String::from("Mirrored block horizontally");
+            } else {
+                state.status_message = String::from("No block marked. Press m twice to mark a block.");
+            }
+        }
+        "mirror-y" => {
+            if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                sheet.save_undo();
+                sheet.mirror_block(x1, y1, z1, x2, y2, z2, crate::sheet::Direction::Y);
+                sheet.clear_mark();
+                state.status_message = String::from("Mirrored block vertically");
+            } else {
+                state.status_message = String::from("No block marked. Press m twice to mark a block.");
+            }
+        }
+        "mirror-z" => {
+            if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                sheet.save_undo();
+                sheet.mirror_block(x1, y1, z1, x2, y2, z2, crate::sheet::Direction::Z);
+                sheet.clear_mark();
+                state.status_message = String::from("Mirrored block across layers");
+            } else {
+                state.status_message = String::from("No block marked. Press m twice to mark a block.");
+            }
+        }
+        "fill" => {
+            if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                let parts: Vec<&str> = arg.split_whitespace().collect();
+                let cols = parts.first().and_then(|s| s.parse::<usize>().ok()).unwrap_or(1);
+                let rows = parts.get(1).and_then(|s| s.parse::<usize>().ok()).unwrap_or(1);
+                let layers = parts.get(2).and_then(|s| s.parse::<usize>().ok()).unwrap_or(1);
+                if cols == 0 || rows == 0 || layers == 0 {
+                    state.status_message = String::from("Usage: :fill cols rows [layers] (all > 0)");
+                } else {
+                    sheet.save_undo();
+                    let count = sheet.fill_block(x1, y1, z1, x2, y2, z2, cols, rows, layers);
+                    sheet.clear_mark();
+                    state.status_message = format!("Filled {} cells ({}x{}x{} grid)", count, cols, rows, layers);
+                }
             } else {
                 state.status_message = String::from("No block marked. Press m twice to mark a block.");
             }
@@ -721,6 +1267,68 @@ fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
                 }
             }
         }
+        // Sheet navigation commands
+        "sheet" => {
+            if let Ok(n) = arg.parse::<usize>() {
+                if n > 0 {
+                    sheet.cur_z = n - 1;
+                    if sheet.cur_z >= sheet.dim_z {
+                        sheet.dim_z = sheet.cur_z + 1;
+                    }
+                    state.status_message = format!("Switched to Sheet {}", n);
+                } else {
+                    state.status_message = String::from("Sheet number must be > 0");
+                }
+            } else {
+                state.status_message = format!("Current: Sheet {} of {}", sheet.cur_z + 1, sheet.dim_z);
+            }
+        }
+        "sheet-add" => {
+            sheet.dim_z += 1;
+            sheet.cur_z = sheet.dim_z - 1;
+            sheet.changed = true;
+            state.status_message = format!("Added Sheet {} (total: {})", sheet.dim_z, sheet.dim_z);
+        }
+        "sheet-del" => {
+            if sheet.dim_z > 1 {
+                // Clear all cells on the current sheet layer
+                let z = sheet.cur_z;
+                let keys: Vec<_> = sheet.cell_coords().into_iter()
+                    .filter(|&(_, _, cz)| cz == z)
+                    .collect();
+                for (x, y, z) in keys {
+                    sheet.clear_block(x, y, z, x, y, z);
+                }
+                // Shift sheets above down (done implicitly by dim_z reduction)
+                if sheet.cur_z >= sheet.dim_z - 1 {
+                    sheet.cur_z = sheet.dim_z - 2;
+                }
+                sheet.dim_z -= 1;
+                sheet.changed = true;
+                state.status_message = format!("Deleted sheet (remaining: {})", sheet.dim_z);
+            } else {
+                state.status_message = String::from("Cannot delete the last sheet");
+            }
+        }
+        "sheets" => {
+            state.sheet_picker_active = true;
+            state.sheet_picker_selection = sheet.cur_z;
+        }
+        // Clock commands
+        "clock" => {
+            let (x, y, z) = (sheet.cur_x, sheet.cur_y, sheet.cur_z);
+            let enabled = sheet.toggle_clock(x, y, z);
+            state.status_message = format!("Clock {}", if enabled { "enabled" } else { "disabled" });
+        }
+        "clock-run" => {
+            let mut total = 0;
+            for _ in 0..1000 {
+                let count = sheet.clock_tick();
+                if count == 0 { break; }
+                total += count;
+            }
+            state.status_message = format!("Clock run: {} total updates", total);
+        }
         "help" => {
             state.input_mode = InputMode::Help;
         }
@@ -757,10 +1365,10 @@ fn ui(f: &mut Frame, sheet: &Sheet, state: &DisplayState) {
     f.render_widget(tabs, chunks[0]);
 
     // Spreadsheet or Help
-    if matches!(state.input_mode, InputMode::Help) {
+    if state.input_mode == InputMode::Help {
         render_help(f, chunks[1]);
     } else {
-        render_sheet(f, sheet, chunks[1]);
+        render_sheet(f, sheet, state, chunks[1]);
     }
 
     // Status bar: show cell info
@@ -779,16 +1387,23 @@ fn ui(f: &mut Frame, sheet: &Sheet, state: &DisplayState) {
     // Input bar
     match state.input_mode {
         InputMode::Normal => {
-            let help = Paragraph::new(" hjkl: move | HJKL: page | e/Enter: edit | :: command | Ctrl+Q: quit")
+            let help_text = if state.palette_active || state.sheet_picker_active || state.picker_active {
+                " Use arrow keys to navigate, Enter to select, Esc to cancel"
+            } else {
+                " hjkl: move | =/': formula/text | 0-9: number | :: command | /: palette | ?: help"
+            };
+            let help = Paragraph::new(help_text)
                 .style(Style::default().fg(Color::DarkGray));
             f.render_widget(help, chunks[3]);
         }
         InputMode::Editing => {
-            let input = Paragraph::new(format!("Edit: {}", state.input_buffer))
+            let prefix = if state.text_editing { "Text: " } else { "Edit: " };
+            let display = format!("{}{}", prefix, state.input_buffer);
+            let input = Paragraph::new(display)
                 .style(Style::default().fg(Color::Yellow));
             f.render_widget(input, chunks[3]);
             f.set_cursor_position((
-                chunks[3].x + 6 + state.cursor_position as u16,
+                chunks[3].x + prefix.len() as u16 + state.cursor_position as u16,
                 chunks[3].y,
             ));
         }
@@ -807,6 +1422,17 @@ fn ui(f: &mut Frame, sheet: &Sheet, state: &DisplayState) {
             f.render_widget(help, chunks[3]);
         }
     }
+
+    // Render overlays
+    if state.palette_active {
+        render_palette(f, state);
+    }
+    if state.sheet_picker_active {
+        render_sheet_picker(f, sheet, state);
+    }
+    if state.picker_active {
+        render_cell_picker_info(f, state);
+    }
 }
 
 fn render_help(f: &mut Frame, area: Rect) {
@@ -820,16 +1446,24 @@ fn render_help(f: &mut Frame, area: Rect) {
     l / Right     Move right          L   Page right
     Home          Go to (0,0)         End Go to last cell
     PgUp/PgDn     Page up/down        Tab Next sheet
+    [ / ]         Prev/next sheet     Z   Sheet picker
     +/-           Widen/narrow column
 
   Editing
-    e / Enter     Edit cell            m   Mark block (twice)
+    = / Enter     Formula / edit cell  '   Text entry (auto-quotes)
+    0-9           Quick number entry   m   Mark block (twice)
     Delete        Clear current cell   u   Clear mark
     y             Yank (copy) block    p   Paste at cursor
     Ctrl+Z        Undo                 Ctrl+Y  Redo
-    Esc           Cancel editing
+    Esc           Cancel editing       C   Clock tick
 
-  Commands (press : to enter command mode)
+  Edit mode keys
+    Left/Right    Move cursor          Home/End  Jump to start/end
+    Ctrl+A/E      Beginning/end        Ctrl+K    Kill to end
+    Ctrl+U        Kill to beginning    Ctrl+W    Delete word back
+    @             Cell picker (select cell reference)
+
+  Commands (: for command mode, / or F1 for palette)
     :w [file]     Save (.tp/.tpz/.xlsx)  :o <file>  Open file
     :q            Quit                  :q!        Force quit
     :wq           Save and quit         :goto x,y  Move to cell
@@ -840,6 +1474,10 @@ fn render_help(f: &mut Frame, area: Rect) {
     :undo         Undo last change      :redo      Redo last undo
     :copy         Copy block to cursor  :move      Move block to cursor
     :clear        Clear marked block    :sort [col] [asc|desc]
+    :sort-y       Sort cols by row      :sort-z    Sort layers
+    :mirror-x/y/z Mirror block          :fill c r [l]  Tile block
+    :sheet N      Switch to sheet N     :sheet-add/:sheet-del
+    :clock        Toggle cell clock     :clock-run Run clock
     :export-text  Export as plain text  :export-csv   Export as CSV
     :export-html  Export as HTML        :export-latex Export as LaTeX
     :export-context  Export as ConTeXt  :help         Show this help
@@ -859,7 +1497,7 @@ fn render_help(f: &mut Frame, area: Rect) {
     f.render_widget(help, area);
 }
 
-fn render_sheet(f: &mut Frame, sheet: &Sheet, area: Rect) {
+fn render_sheet(f: &mut Frame, sheet: &Sheet, state: &DisplayState, area: Rect) {
     if area.height < 3 || area.width < 6 {
         return;
     }
@@ -910,9 +1548,12 @@ fn render_sheet(f: &mut Frame, sheet: &Sheet, area: Rect) {
                 String::new()
             };
 
-            let in_mark = sheet.get_mark_range().map_or(false, |(x1, y1, z1, x2, y2, z2)|
+            let in_mark = sheet.get_mark_range().is_some_and(|(x1, y1, z1, x2, y2, z2)|
                 x >= x1 && x <= x2 && y >= y1 && y <= y2 && z >= z1 && z <= z2);
-            let style = if x == sheet.cur_x && y == sheet.cur_y {
+            let is_picker = state.picker_active && x == state.picker_x && y == state.picker_y && z == state.picker_z;
+            let style = if is_picker {
+                Style::default().fg(Color::Black).bg(Color::Green)
+            } else if x == sheet.cur_x && y == sheet.cur_y {
                 Style::default().fg(Color::Black).bg(Color::White)
             } else if in_mark {
                 Style::default().fg(Color::Black).bg(Color::Cyan)
@@ -938,4 +1579,83 @@ fn render_sheet(f: &mut Frame, sheet: &Sheet, area: Rect) {
         .column_spacing(1);
 
     f.render_widget(table, area);
+}
+
+/// Render the command palette popup
+fn render_palette(f: &mut Frame, state: &DisplayState) {
+    let area = f.area();
+    // Center the palette
+    let width = 40u16.min(area.width.saturating_sub(4));
+    let height = 20u16.min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let popup_area = Rect::new(x, y, width, height);
+
+    f.render_widget(Clear, popup_area);
+
+    let filtered = get_palette_items(&state.palette_filter);
+
+    let items: Vec<ListItem> = filtered.iter()
+        .enumerate()
+        .take(height.saturating_sub(3) as usize)
+        .map(|(i, cmd)| {
+            let style = if i == state.palette_selection {
+                Style::default().fg(Color::Black).bg(Color::Yellow)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(Line::from(Span::styled(format!(":{}", cmd), style)))
+        })
+        .collect();
+
+    let title = format!("Commands [{}]", if state.palette_filter.is_empty() { "*" } else { &state.palette_filter });
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(title).style(Style::default().bg(Color::DarkGray)));
+
+    f.render_widget(list, popup_area);
+}
+
+/// Render the sheet picker popup
+fn render_sheet_picker(f: &mut Frame, sheet: &Sheet, state: &DisplayState) {
+    let area = f.area();
+    let max_z = sheet.dim_z.max(1);
+    let height = (max_z as u16 + 2).min(area.height.saturating_sub(4));
+    let width = 25u16.min(area.width.saturating_sub(4));
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let popup_area = Rect::new(x, y, width, height);
+
+    f.render_widget(Clear, popup_area);
+
+    let items: Vec<ListItem> = (0..max_z)
+        .map(|i| {
+            let style = if i == state.sheet_picker_selection {
+                Style::default().fg(Color::Black).bg(Color::Yellow)
+            } else if i == sheet.cur_z {
+                Style::default().fg(Color::Yellow)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            let marker = if i == sheet.cur_z { " *" } else { "" };
+            ListItem::new(Line::from(Span::styled(format!(" Sheet {}{}", i + 1, marker), style)))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title("Sheets").style(Style::default().bg(Color::DarkGray)));
+
+    f.render_widget(list, popup_area);
+}
+
+/// Render cell picker info bar
+fn render_cell_picker_info(f: &mut Frame, state: &DisplayState) {
+    let area = f.area();
+    if area.height < 3 { return; }
+    // Show a small info bar at the top
+    let info = format!(" Cell picker: @({},{},{})  [arrows to move, Enter to insert, Esc to cancel]",
+        state.picker_x, state.picker_y, state.picker_z);
+    let popup_area = Rect::new(0, 0, area.width, 1);
+    let widget = Paragraph::new(info)
+        .style(Style::default().fg(Color::Black).bg(Color::Green));
+    f.render_widget(widget, popup_area);
 }

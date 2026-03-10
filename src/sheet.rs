@@ -756,6 +756,241 @@ impl Sheet {
         self.update();
         count
     }
+
+    /// Mirror a block of cells along the given axis
+    pub fn mirror_block(&mut self, x1: usize, y1: usize, z1: usize,
+                        x2: usize, y2: usize, z2: usize, direction: Direction) {
+        match direction {
+            Direction::X => {
+                // Swap columns left↔right within block
+                let width = x2 - x1;
+                for y in y1..=y2 {
+                    for z in z1..=z2 {
+                        for i in 0..=(width / 2) {
+                            let left = x1 + i;
+                            let right = x2 - i;
+                            if left >= right { break; }
+                            let cell_l = self.cells.remove(&(left, y, z));
+                            let cell_r = self.cells.remove(&(right, y, z));
+                            if let Some(c) = cell_l { self.cells.insert((right, y, z), c); }
+                            if let Some(c) = cell_r { self.cells.insert((left, y, z), c); }
+                        }
+                    }
+                }
+            }
+            Direction::Y => {
+                // Swap rows top↔bottom within block
+                let height = y2 - y1;
+                for x in x1..=x2 {
+                    for z in z1..=z2 {
+                        for i in 0..=(height / 2) {
+                            let top = y1 + i;
+                            let bot = y2 - i;
+                            if top >= bot { break; }
+                            let cell_t = self.cells.remove(&(x, top, z));
+                            let cell_b = self.cells.remove(&(x, bot, z));
+                            if let Some(c) = cell_t { self.cells.insert((x, bot, z), c); }
+                            if let Some(c) = cell_b { self.cells.insert((x, top, z), c); }
+                        }
+                    }
+                }
+            }
+            Direction::Z => {
+                // Swap layers front↔back within block
+                let depth = z2 - z1;
+                for x in x1..=x2 {
+                    for y in y1..=y2 {
+                        for i in 0..=(depth / 2) {
+                            let front = z1 + i;
+                            let back = z2 - i;
+                            if front >= back { break; }
+                            let cell_f = self.cells.remove(&(x, y, front));
+                            let cell_b = self.cells.remove(&(x, y, back));
+                            if let Some(c) = cell_f { self.cells.insert((x, y, back), c); }
+                            if let Some(c) = cell_b { self.cells.insert((x, y, front), c); }
+                        }
+                    }
+                }
+            }
+        }
+        self.changed = true;
+        self.cachelabels();
+        self.update();
+    }
+
+    /// Fill (tile) a block repeatedly in a grid pattern
+    pub fn fill_block(&mut self, x1: usize, y1: usize, z1: usize,
+                      x2: usize, y2: usize, z2: usize,
+                      cols: usize, rows: usize, layers: usize) -> usize {
+        let bw = x2 - x1 + 1;
+        let bh = y2 - y1 + 1;
+        let bd = z2 - z1 + 1;
+        let mut total = 0;
+        for lz in 0..layers {
+            for ry in 0..rows {
+                for cx in 0..cols {
+                    if cx == 0 && ry == 0 && lz == 0 { continue; } // skip original
+                    let to_x = x1 + cx * bw;
+                    let to_y = y1 + ry * bh;
+                    let to_z = z1 + lz * bd;
+                    total += self.copy_block(x1, y1, z1, x2, y2, z2, to_x, to_y, to_z);
+                }
+            }
+        }
+        self.update();
+        total
+    }
+
+    /// Sort columns in a block by a key row
+    pub fn sort_block_y(&mut self, x1: usize, y1: usize, z1: usize,
+                        x2: usize, y2: usize, _z2: usize,
+                        sort_row: usize, ascending: bool) {
+        // Collect columns as vectors of (y, cell) pairs
+        let mut cols: Vec<(usize, Vec<((usize, usize), Cell)>)> = Vec::new();
+        for x in x1..=x2 {
+            let mut col_cells = Vec::new();
+            for y in y1..=y2 {
+                if let Some(cell) = self.cells.remove(&(x, y, z1)) {
+                    col_cells.push(((x, y), cell));
+                }
+            }
+            cols.push((x, col_cells));
+        }
+
+        cols.sort_by(|a, b| {
+            let val_a = a.1.iter()
+                .find(|((_, y), _)| *y == sort_row)
+                .map(|(_, c)| &c.value);
+            let val_b = b.1.iter()
+                .find(|((_, y), _)| *y == sort_row)
+                .map(|(_, c)| &c.value);
+            let ord = cmp_token_values(val_a, val_b);
+            if ascending { ord } else { ord.reverse() }
+        });
+
+        for (new_x_offset, (_old_x, col_cells)) in cols.into_iter().enumerate() {
+            let new_x = x1 + new_x_offset;
+            for ((_old_x, y), cell) in col_cells {
+                self.cells.insert((new_x, y, z1), cell);
+            }
+        }
+
+        self.changed = true;
+        self.cachelabels();
+        self.update();
+    }
+
+    /// Sort layers in a block by a cell value at a given layer
+    pub fn sort_block_z(&mut self, x1: usize, y1: usize, z1: usize,
+                        x2: usize, y2: usize, z2: usize,
+                        sort_x: usize, sort_y: usize, ascending: bool) {
+        // Collect layers
+        let mut layers: Vec<(usize, Vec<((usize, usize, usize), Cell)>)> = Vec::new();
+        for z in z1..=z2 {
+            let mut layer_cells = Vec::new();
+            for y in y1..=y2 {
+                for x in x1..=x2 {
+                    if let Some(cell) = self.cells.remove(&(x, y, z)) {
+                        layer_cells.push(((x, y, z), cell));
+                    }
+                }
+            }
+            layers.push((z, layer_cells));
+        }
+
+        layers.sort_by(|a, b| {
+            let val_a = a.1.iter()
+                .find(|((x, y, _), _)| *x == sort_x && *y == sort_y)
+                .map(|(_, c)| &c.value);
+            let val_b = b.1.iter()
+                .find(|((x, y, _), _)| *x == sort_x && *y == sort_y)
+                .map(|(_, c)| &c.value);
+            let ord = cmp_token_values(val_a, val_b);
+            if ascending { ord } else { ord.reverse() }
+        });
+
+        for (new_z_offset, (_old_z, layer_cells)) in layers.into_iter().enumerate() {
+            let new_z = z1 + new_z_offset;
+            for ((x, y, _old_z), cell) in layer_cells {
+                self.cells.insert((x, y, new_z), cell);
+            }
+        }
+
+        self.changed = true;
+        self.cachelabels();
+        self.update();
+    }
+
+    /// Toggle clock mode on a cell
+    pub fn toggle_clock(&mut self, x: usize, y: usize, z: usize) -> bool {
+        let cell = self.get_or_create_cell(x, y, z);
+        cell.clock_t2 = !cell.clock_t2;
+        if cell.clock_t2 {
+            // Copy current contents to clocked_contents
+            cell.clocked_contents = cell.contents.clone();
+        } else {
+            cell.clocked_contents = None;
+            cell.clock_t0 = false;
+            cell.clock_t1 = false;
+        }
+        cell.clock_t2
+    }
+
+    /// Execute one clock tick: trigger → evaluate → commit
+    pub fn clock_tick(&mut self) -> usize {
+        // Phase 1: Mark clocked cells for re-eval
+        let clocked_coords: Vec<(usize, usize, usize)> = self.cells.iter()
+            .filter(|(_, cell)| cell.clock_t2)
+            .map(|(k, _)| *k)
+            .collect();
+
+        if clocked_coords.is_empty() {
+            return 0;
+        }
+
+        for &(x, y, z) in &clocked_coords {
+            if let Some(cell) = self.cells.get_mut(&(x, y, z)) {
+                cell.clock_t0 = true;
+                cell.clock_t1 = true;
+                cell.updated = false;
+            }
+        }
+
+        // Phase 2: Evaluate all clocked cells, store in clocked_value
+        for &(x, y, z) in &clocked_coords {
+            let contents = self.cells.get_mut(&(x, y, z))
+                .and_then(|c| c.contents.take());
+
+            if let Some(tokens) = contents {
+                let value = {
+                    let mut ctx = crate::parser::EvalContext {
+                        sheet: self,
+                        x, y, z,
+                        max_eval: 256,
+                    };
+                    crate::parser::eval_tokens(&tokens, &mut ctx)
+                };
+
+                if let Some(cell) = self.cells.get_mut(&(x, y, z)) {
+                    cell.contents = Some(tokens);
+                    cell.clocked_value = value;
+                }
+            }
+        }
+
+        // Phase 3: Commit - copy clocked_value → value, clear flags
+        for &(x, y, z) in &clocked_coords {
+            if let Some(cell) = self.cells.get_mut(&(x, y, z)) {
+                cell.value = cell.clocked_value.clone();
+                cell.clock_t0 = false;
+                cell.clock_t1 = false;
+                cell.updated = true;
+            }
+        }
+
+        self.changed = true;
+        clocked_coords.len()
+    }
 }
 
 #[cfg(test)]
@@ -833,5 +1068,90 @@ mod tests {
         assert_eq!(sheet.get_cell(1, 1, 0).unwrap().value, Token::Integer(2));
         // Originals still there
         assert_eq!(sheet.get_cell(0, 0, 0).unwrap().value, Token::Integer(1));
+    }
+
+    #[test]
+    fn test_mirror_block_x() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(1)]);
+        sheet.putcont(1, 0, 0, vec![Token::Integer(2)]);
+        sheet.putcont(2, 0, 0, vec![Token::Integer(3)]);
+        sheet.update();
+
+        sheet.mirror_block(0, 0, 0, 2, 0, 0, Direction::X);
+        assert_eq!(sheet.get_cell(0, 0, 0).unwrap().value, Token::Integer(3));
+        assert_eq!(sheet.get_cell(1, 0, 0).unwrap().value, Token::Integer(2));
+        assert_eq!(sheet.get_cell(2, 0, 0).unwrap().value, Token::Integer(1));
+    }
+
+    #[test]
+    fn test_mirror_block_y() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(1)]);
+        sheet.putcont(0, 1, 0, vec![Token::Integer(2)]);
+        sheet.putcont(0, 2, 0, vec![Token::Integer(3)]);
+        sheet.update();
+
+        sheet.mirror_block(0, 0, 0, 0, 2, 0, Direction::Y);
+        assert_eq!(sheet.get_cell(0, 0, 0).unwrap().value, Token::Integer(3));
+        assert_eq!(sheet.get_cell(0, 1, 0).unwrap().value, Token::Integer(2));
+        assert_eq!(sheet.get_cell(0, 2, 0).unwrap().value, Token::Integer(1));
+    }
+
+    #[test]
+    fn test_fill_block() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(1)]);
+        sheet.putcont(1, 0, 0, vec![Token::Integer(2)]);
+        sheet.putcont(0, 1, 0, vec![Token::Integer(3)]);
+        sheet.putcont(1, 1, 0, vec![Token::Integer(4)]);
+        sheet.update();
+
+        let count = sheet.fill_block(0, 0, 0, 1, 1, 0, 2, 2, 1);
+        // Should have copied to 3 additional positions (2x2 grid minus original)
+        assert!(count > 0);
+        // Check one of the copies
+        assert_eq!(sheet.get_cell(2, 0, 0).unwrap().value, Token::Integer(1));
+        assert_eq!(sheet.get_cell(3, 0, 0).unwrap().value, Token::Integer(2));
+        assert_eq!(sheet.get_cell(0, 2, 0).unwrap().value, Token::Integer(1));
+    }
+
+    #[test]
+    fn test_sort_block_y() {
+        let mut sheet = Sheet::new();
+        // 3 columns, 2 rows; sort columns by row 0
+        sheet.putcont(0, 0, 0, vec![Token::Integer(3)]);
+        sheet.putcont(1, 0, 0, vec![Token::Integer(1)]);
+        sheet.putcont(2, 0, 0, vec![Token::Integer(2)]);
+        sheet.putcont(0, 1, 0, vec![Token::String("c".to_string())]);
+        sheet.putcont(1, 1, 0, vec![Token::String("a".to_string())]);
+        sheet.putcont(2, 1, 0, vec![Token::String("b".to_string())]);
+        sheet.update();
+
+        sheet.sort_block_y(0, 0, 0, 2, 1, 0, 0, true);
+        assert_eq!(sheet.get_cell(0, 0, 0).unwrap().value, Token::Integer(1));
+        assert_eq!(sheet.get_cell(1, 0, 0).unwrap().value, Token::Integer(2));
+        assert_eq!(sheet.get_cell(2, 0, 0).unwrap().value, Token::Integer(3));
+    }
+
+    #[test]
+    fn test_clock_tick() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(42)]);
+        sheet.update();
+
+        // Enable clock on cell
+        let enabled = sheet.toggle_clock(0, 0, 0);
+        assert!(enabled);
+        assert!(sheet.get_cell(0, 0, 0).unwrap().clock_t2);
+
+        // Tick should evaluate and commit
+        let count = sheet.clock_tick();
+        assert_eq!(count, 1);
+        assert_eq!(sheet.get_cell(0, 0, 0).unwrap().value, Token::Integer(42));
+
+        // Disable clock
+        let enabled = sheet.toggle_clock(0, 0, 0);
+        assert!(!enabled);
     }
 }
