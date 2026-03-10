@@ -4,7 +4,7 @@
 
 ### Core Engine
 - [x] Token, Scanner, Parser (recursive descent evaluator, no AST)
-- [x] 41 built-in functions (math, string, cell refs, aggregates, utility)
+- [x] 42 built-in functions (math, string, cell refs, aggregates, utility)
 - [x] 3D sparse HashMap-based sheet with lazy on-demand evaluation
 - [x] Type-safe arithmetic with promotion rules matching C original
 
@@ -51,6 +51,11 @@
 - [x] Label-based cell references — @("labelName"), :label, :labels picker
 - [x] eval() function — re-evaluates a cell's formula (with recursion protection)
 - [x] Export marked block only (all export commands respect mark range)
+- [x] @/& partial coordinate support — @(), @(x), @(x,y), &(), &(x), &(x,y)
+- [x] log(x, base) two-argument form
+- [x] rnd() zero-argument random [0,1)
+- [x] strftime() with chrono — format string + optional timestamp
+- [x] Status bar: modified indicator (*), mark range display
 
 ## Remaining Work
 
@@ -63,7 +68,7 @@
 - [ ] Mouse support (click to select cell, scroll)
 - [ ] Theming / color schemes
 - [ ] Resizable column widths by dragging
-- [ ] Status bar: show mark range, modified indicator
+- [x] Status bar: show mark range, modified indicator
 - [ ] Configurable key bindings
 
 ### Missing C Features

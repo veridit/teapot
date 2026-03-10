@@ -34,7 +34,7 @@ The parser is a recursive descent evaluator that evaluates on the fly (no AST). 
 - **`scanner.rs`** — Tokenizer. `scan(&str) -> Vec<Token>` and `print_tokens()` for serialization.
 - **`parser.rs`** — Recursive descent evaluator. `eval_tokens(&[Token], &mut EvalContext) -> Token`. Precedence: relational < additive < multiplicative < power < primary.
 - **`eval.rs`** — Arithmetic/comparison operations (add, sub, mul, div, pow, neg, lt, le, ge, gt, eq, ne, about_eq). Type promotion rules match C implementation.
-- **`functions.rs`** — 41 built-in functions: math, string, cell references (@, &, x, y, z), aggregates (sum, n, min, max), type conversion, utility.
+- **`functions.rs`** — 42 built-in functions: math, string, cell references (@, &, x, y, z), aggregates (sum, n, min, max), type conversion, utility.
 - **`sheet.rs`** — `Sheet` (HashMap-based 3D grid), `Cell`, `Adjust`, `Direction`. Key methods: `update()`, `eval_cell()`, `getvalue()`, `putcont()`, `findlabel()`, `cachelabels()`.
 - **`display.rs`** — Terminal UI (ratatui/crossterm). Three input modes: Normal, Editing, Command. Editing scans input → stores tokens → runs update().
 - **`fileio.rs`** — Portable ASCII (.tpa) load/save, CSV load/save, text export. Stubs for XDR, HTML, LaTeX, ConTeXt, SC, WK1.

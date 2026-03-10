@@ -1,5 +1,6 @@
 use crate::parser::EvalContext;
 use crate::token::Token;
+use chrono::{DateTime, Local, TimeZone};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Dispatch a function call by name
@@ -7,7 +8,7 @@ pub fn call_function(name: &str, args: &[Token], ctx: &mut EvalContext) -> Token
     match name {
         // Cell reference functions
         "@" => func_at(args, ctx),
-        "&" => func_adr(args),
+        "&" => func_adr(args, ctx),
         "x" => func_x(args, ctx),
         "y" => func_y(args, ctx),
         "z" => func_z(args, ctx),
@@ -34,7 +35,7 @@ pub fn call_function(name: &str, args: &[Token], ctx: &mut EvalContext) -> Token
         "artanh" => sci_func(args, f64::atanh),
         "deg2rad" => sci_func(args, |x| x * std::f64::consts::PI / 180.0),
         "rad2deg" => sci_func(args, |x| x * 180.0 / std::f64::consts::PI),
-        "log" => sci_func(args, f64::ln),
+        "log" => func_log(args),
         "e" => func_e(args),
         "rnd" => func_rnd(args),
 
@@ -102,44 +103,86 @@ fn sci_func(args: &[Token], f: impl Fn(f64) -> f64) -> Token {
 
 // --- Cell reference functions ---
 
+/// Helper: resolve a coordinate arg, defaulting to the given current value if Empty
+fn coord_or_default(arg: &Token, default: usize) -> Result<usize, Token> {
+    match arg {
+        Token::Empty => Ok(default),
+        _ => to_float(arg).map(|v| v as usize),
+    }
+}
+
 fn func_at(args: &[Token], ctx: &mut EvalContext) -> Token {
-    if args.len() < 3 {
-        // Single argument: location or string (label name)
-        if args.len() == 1 {
-            match &args[0] {
-                Token::Location(loc) => {
-                    return ctx.sheet.getvalue(loc[0], loc[1], loc[2]);
+    // @() — value at current cell
+    if args.is_empty() {
+        return ctx.sheet.getvalue(ctx.x, ctx.y, ctx.z);
+    }
+    // @(location) or @("label")
+    if args.len() == 1 {
+        match &args[0] {
+            Token::Location(loc) => {
+                return ctx.sheet.getvalue(loc[0], loc[1], loc[2]);
+            }
+            Token::String(label) => {
+                if let Some((x, y, z)) = ctx.sheet.findlabel_location(label) {
+                    return ctx.sheet.getvalue(x, y, z);
+                } else {
+                    return Token::Error(format!("label '{}' not found", label));
                 }
-                Token::String(label) => {
-                    if let Some((x, y, z)) = ctx.sheet.findlabel_location(label) {
-                        return ctx.sheet.getvalue(x, y, z);
-                    } else {
-                        return Token::Error(format!("label '{}' not found", label));
-                    }
+            }
+            Token::Error(_) => return args[0].clone(),
+            _ => {
+                // @(x) — single numeric arg means (x, cur_y, cur_z)
+                match coord_or_default(&args[0], ctx.x) {
+                    Ok(x) => return ctx.sheet.getvalue(x, ctx.y, ctx.z),
+                    Err(e) => return e,
                 }
-                Token::Error(_) => return args[0].clone(),
-                _ => {}
             }
         }
-        return Token::Error("@ requires location argument".to_string());
     }
-    // Three coordinate arguments
-    match (to_float(&args[0]), to_float(&args[1]), to_float(&args[2])) {
-        (Ok(x), Ok(y), Ok(z)) => {
-            ctx.sheet.getvalue(x as usize, y as usize, z as usize)
+    // @(x,y) — two args means (x, y, cur_z)
+    if args.len() == 2 {
+        match (coord_or_default(&args[0], ctx.x), coord_or_default(&args[1], ctx.y)) {
+            (Ok(x), Ok(y)) => return ctx.sheet.getvalue(x, y, ctx.z),
+            (Err(e), _) | (_, Err(e)) => return e,
         }
+    }
+    // @(x,y,z) — three args, Empty means use current
+    match (
+        coord_or_default(&args[0], ctx.x),
+        coord_or_default(&args[1], ctx.y),
+        coord_or_default(&args[2], ctx.z),
+    ) {
+        (Ok(x), Ok(y), Ok(z)) => ctx.sheet.getvalue(x, y, z),
         (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => e,
     }
 }
 
-fn func_adr(args: &[Token]) -> Token {
-    if args.len() < 3 {
-        return Token::Error("& requires 3 arguments".to_string());
+fn func_adr(args: &[Token], ctx: &EvalContext) -> Token {
+    // &() — location of current cell
+    if args.is_empty() {
+        return Token::Location([ctx.x, ctx.y, ctx.z]);
     }
-    match (to_float(&args[0]), to_float(&args[1]), to_float(&args[2])) {
-        (Ok(x), Ok(y), Ok(z)) => {
-            Token::Location([x as usize, y as usize, z as usize])
+    // &(x) — (x, cur_y, cur_z)
+    if args.len() == 1 {
+        match coord_or_default(&args[0], ctx.x) {
+            Ok(x) => return Token::Location([x, ctx.y, ctx.z]),
+            Err(e) => return e,
         }
+    }
+    // &(x,y) — (x, y, cur_z)
+    if args.len() == 2 {
+        match (coord_or_default(&args[0], ctx.x), coord_or_default(&args[1], ctx.y)) {
+            (Ok(x), Ok(y)) => return Token::Location([x, y, ctx.z]),
+            (Err(e), _) | (_, Err(e)) => return e,
+        }
+    }
+    // &(x,y,z) — Empty means use current
+    match (
+        coord_or_default(&args[0], ctx.x),
+        coord_or_default(&args[1], ctx.y),
+        coord_or_default(&args[2], ctx.z),
+    ) {
+        (Ok(x), Ok(y), Ok(z)) => Token::Location([x, y, z]),
         (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => e,
     }
 }
@@ -364,18 +407,46 @@ fn func_e(args: &[Token]) -> Token {
     }
 }
 
-fn func_rnd(args: &[Token]) -> Token {
+fn func_log(args: &[Token]) -> Token {
     if args.is_empty() {
         return Token::Error("argument expected".to_string());
     }
     match to_float(&args[0]) {
         Ok(x) => {
-            // Simple deterministic "random" — real implementation would use proper RNG
-            let val = ((x * 1103515245.0 + 12345.0) % 2147483648.0).abs() / 2147483648.0;
-            Token::Float(val * x)
+            let result = if args.len() >= 2 {
+                // log(x, base)
+                match to_float(&args[1]) {
+                    Ok(base) => x.ln() / base.ln(),
+                    Err(e) => return e,
+                }
+            } else {
+                // log(x) — natural log
+                x.ln()
+            };
+            if result.is_infinite() || result.is_nan() {
+                Token::Error("math domain error".to_string())
+            } else {
+                Token::Float(result)
+            }
         }
         Err(e) => e,
     }
+}
+
+fn func_rnd(_args: &[Token]) -> Token {
+    // rnd() — returns uniform random float in [0, 1)
+    // Use system time to seed a simple random value
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    // xorshift-style mixing of the nanosecond timestamp
+    let mut s = t as u64;
+    s ^= s >> 12;
+    s ^= s << 25;
+    s ^= s >> 27;
+    s = s.wrapping_mul(0x2545F4914F6CDD1D);
+    Token::Float((s >> 11) as f64 / (1u64 << 53) as f64)
 }
 
 fn func_poly(args: &[Token]) -> Token {
@@ -494,20 +565,26 @@ fn func_clock(args: &[Token], ctx: &EvalContext) -> Token {
 }
 
 fn func_strftime(args: &[Token]) -> Token {
-    // Simplified: format a unix timestamp
-    if args.len() < 2 {
-        return Token::Error("strftime requires format and timestamp".to_string());
+    if args.is_empty() {
+        return Token::Error("strftime requires format string".to_string());
     }
-    match (&args[0], to_float(&args[1])) {
-        (Token::String(_fmt), Ok(_ts)) => {
-            // Full strftime would require libc or chrono crate
-            // For now, return the timestamp as a string
-            Token::String(format!("{}", _ts as i64))
+    let fmt = match &args[0] {
+        Token::String(s) => s.as_str(),
+        Token::Error(_) => return args[0].clone(),
+        _ => return Token::Error("string expected for strftime format".to_string()),
+    };
+    let dt: DateTime<Local> = if args.len() >= 2 {
+        match to_float(&args[1]) {
+            Ok(ts) => match Local.timestamp_opt(ts as i64, 0) {
+                chrono::LocalResult::Single(dt) => dt,
+                _ => return Token::Error("invalid timestamp".to_string()),
+            },
+            Err(e) => return e,
         }
-        (Token::Error(_), _) => args[0].clone(),
-        (_, Err(e)) => e,
-        _ => Token::Error("wrong argument types for strftime()".to_string()),
-    }
+    } else {
+        Local::now()
+    };
+    Token::String(dt.format(fmt).to_string())
 }
 
 fn func_strptime(args: &[Token]) -> Token {

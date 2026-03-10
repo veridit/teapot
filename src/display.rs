@@ -2098,7 +2098,13 @@ fn ui(f: &mut Frame, sheet: &Sheet, state: &DisplayState) {
         .and_then(|c| c.label.as_ref())
         .map(|l| format!(" [{}]", l))
         .unwrap_or_default();
-    let coord_str = format!("({},{},{}){} ", sheet.cur_x, sheet.cur_y, sheet.cur_z, cur_label);
+    let modified_indicator = if sheet.changed { "* " } else { "" };
+    let mark_info = if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+        format!("[mark: ({},{},{})-({},{},{})] ", x1, y1, z1, x2, y2, z2)
+    } else {
+        String::new()
+    };
+    let coord_str = format!("{}({},{},{}){} {}", modified_indicator, sheet.cur_x, sheet.cur_y, sheet.cur_z, cur_label, mark_info);
     let base_style = Style::default().fg(Color::White).bg(Color::Blue);
     let status_spans = if let Some(cell) = sheet.get_cell(status_cell_x, status_cell_y, status_cell_z) {
         if let Some(ref contents) = cell.contents {
