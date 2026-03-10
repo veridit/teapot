@@ -22,6 +22,7 @@ struct DisplayState {
     input_mode: InputMode,
     input_buffer: String,
     cursor_position: usize,
+    terminal_area: Rect,
 }
 
 enum InputMode {
@@ -37,6 +38,7 @@ impl Default for DisplayState {
             input_mode: InputMode::Normal,
             input_buffer: String::new(),
             cursor_position: 0,
+            terminal_area: Rect::default(),
         }
     }
 }
@@ -68,13 +70,61 @@ pub fn display_main(sheet: &mut Sheet) {
     }
 }
 
+/// Adjust viewport offset so the cursor stays visible on screen
+fn adjust_viewport(sheet: &mut Sheet, area: Rect) {
+    let row_num_width = 4u16;
+    // Account for: tabs (1) + table borders (2) + header row (1) + status (1) + input (1) = 6
+    let visible_rows = (area.height as usize).saturating_sub(6);
+
+    // Vertical scrolling
+    if sheet.cur_y < sheet.off_y {
+        sheet.off_y = sheet.cur_y;
+    } else if visible_rows > 0 && sheet.cur_y >= sheet.off_y + visible_rows {
+        sheet.off_y = sheet.cur_y - visible_rows + 1;
+    }
+
+    // Horizontal scrolling
+    if sheet.cur_x < sheet.off_x {
+        sheet.off_x = sheet.cur_x;
+    } else {
+        // Check if cur_x is visible from current off_x
+        let mut used = row_num_width;
+        let mut last_visible_x = sheet.off_x;
+        for x in sheet.off_x..=sheet.cur_x {
+            let w = sheet.column_width(x, sheet.cur_z) as u16;
+            if used + w + 1 > area.width {
+                break;
+            }
+            last_visible_x = x;
+            used += w + 1;
+        }
+        if sheet.cur_x > last_visible_x {
+            // Scroll right: find the leftmost off_x that makes cur_x visible
+            let mut used = row_num_width;
+            let mut new_off = sheet.cur_x;
+            for x in (0..=sheet.cur_x).rev() {
+                let w = sheet.column_width(x, sheet.cur_z) as u16;
+                if used + w + 1 > area.width {
+                    break;
+                }
+                new_off = x;
+                used += w + 1;
+            }
+            sheet.off_x = new_off;
+        }
+    }
+}
+
 fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     sheet: &mut Sheet,
     state: &mut DisplayState,
 ) -> io::Result<()> {
     loop {
-        terminal.draw(|f| ui(f, sheet, state))?;
+        terminal.draw(|f| {
+            state.terminal_area = f.area();
+            ui(f, sheet, state);
+        })?;
 
         if let Event::Key(key) = event::read()? {
             match state.input_mode {
@@ -131,6 +181,7 @@ fn run_app(
                         }
                         _ => {}
                     }
+                    adjust_viewport(sheet, state.terminal_area);
                 }
                 InputMode::Editing => {
                     match key.code {

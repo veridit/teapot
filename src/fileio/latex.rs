@@ -5,15 +5,15 @@ use crate::sheet::Sheet;
 
 /// Save a sheet to a LaTeX file
 pub fn save_latex(
-    sheet: &Sheet, 
-    name: &str, 
-    body: bool, 
-    x1: usize, 
-    y1: usize, 
-    z1: usize, 
-    x2: usize, 
-    y2: usize, 
-    z2: usize
+    _sheet: &Sheet,
+    name: &str,
+    _body: bool,
+    _x1: usize,
+    _y1: usize,
+    _z1: usize,
+    _x2: usize,
+    _y2: usize,
+    _z2: usize
 ) -> Result<usize> {
     // TODO: Implement LaTeX saving
     println!("Saving LaTeX file: {}", name);

@@ -7,7 +7,7 @@ pub fn find_help_file(executable_path: &str) -> PathBuf {
     let exe_path = Path::new(executable_path);
     
     // Try to find the help file in various locations
-    let mut possible_locations = vec![
+    let possible_locations = vec![
         // Same directory as executable
         exe_path.with_file_name("teapot.help"),
         // ../share/teapot/

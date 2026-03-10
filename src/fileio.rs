@@ -66,7 +66,7 @@ fn parse_cell_line(s: &str, sheet: &mut Sheet, line_num: usize) -> Result<()> {
     let mut chars = s.char_indices().peekable();
 
     // Helper to skip spaces
-    fn skip_spaces(chars: &mut std::iter::Peekable<std::str::CharIndices>, s: &str) {
+    fn skip_spaces(chars: &mut std::iter::Peekable<std::str::CharIndices>, _s: &str) {
         while let Some(&(_, c)) = chars.peek() {
             if c == ' ' { chars.next(); } else { break; }
         }
