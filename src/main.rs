@@ -5,7 +5,8 @@ use std::io::{self, BufRead};
 use teapotlib::{
     Sheet,
     display::display_main,
-    fileio::{load_file, load_csv},
+    scanner,
+    fileio::{self, load_file, load_csv},
 };
 
 #[derive(Parser, Debug)]
@@ -40,39 +41,217 @@ struct Args {
     file: Option<PathBuf>,
 }
 
+/// Parse "x,y[,z]" coordinate string
+fn parse_coords(s: &str) -> Option<(usize, usize, usize)> {
+    let coords: Vec<&str> = s.split(',').collect();
+    if coords.len() >= 2 {
+        let x = coords[0].trim().parse().ok()?;
+        let y = coords[1].trim().parse().ok()?;
+        let z = coords.get(2).and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+        Some((x, y, z))
+    } else {
+        None
+    }
+}
+
 /// Process batch mode commands from stdin
 fn process_batch(sheet: &mut Sheet) -> Result<()> {
     let stdin = io::stdin();
     for line_result in stdin.lock().lines() {
         let line = line_result?;
         let line = line.trim();
-        if line.is_empty() { continue; }
+        if line.is_empty() || line.starts_with('#') { continue; }
 
         let parts: Vec<&str> = line.splitn(2, ' ').collect();
         let cmd = parts[0];
         let arg = parts.get(1).map(|s| s.trim()).unwrap_or("");
 
         match cmd {
+            // Navigation
             "goto" => {
-                let coords: Vec<&str> = arg.split(',').collect();
-                if coords.len() >= 2 {
-                    if let (Ok(x), Ok(y)) = (coords[0].trim().parse(), coords[1].trim().parse()) {
-                        sheet.cur_x = x;
-                        sheet.cur_y = y;
-                        if coords.len() > 2 {
-                            if let Ok(z) = coords[2].trim().parse() {
-                                sheet.cur_z = z;
+                if let Some((x, y, z)) = parse_coords(arg) {
+                    sheet.cur_x = x;
+                    sheet.cur_y = y;
+                    sheet.cur_z = z;
+                } else {
+                    eprintln!("goto: expected x,y[,z]");
+                }
+            }
+            "from" => {
+                if let Some((x, y, z)) = parse_coords(arg) {
+                    sheet.mark1_x = Some(x);
+                    sheet.mark1_y = Some(y);
+                    sheet.mark1_z = Some(z);
+                } else {
+                    eprintln!("from: expected x,y[,z]");
+                }
+            }
+            "to" => {
+                if let Some((x, y, z)) = parse_coords(arg) {
+                    sheet.mark2_x = Some(x);
+                    sheet.mark2_y = Some(y);
+                    sheet.mark2_z = Some(z);
+                } else {
+                    eprintln!("to: expected x,y[,z]");
+                }
+            }
+
+            // Cell editing
+            "set" => {
+                // set x,y[,z] expression
+                let set_parts: Vec<&str> = arg.splitn(2, ' ').collect();
+                if set_parts.len() == 2 {
+                    if let Some((x, y, z)) = parse_coords(set_parts[0]) {
+                        match scanner::scan(set_parts[1]) {
+                            Ok(tokens) => {
+                                sheet.putcont(x, y, z, tokens);
+                                sheet.update();
                             }
+                            Err(e) => eprintln!("set: parse error: {}", e),
                         }
+                    } else {
+                        eprintln!("set: expected x,y[,z] expression");
+                    }
+                } else {
+                    eprintln!("set: expected x,y[,z] expression");
+                }
+            }
+            "print" => {
+                if let Some((x, y, z)) = parse_coords(arg) {
+                    if let Some(cell) = sheet.get_cell(x, y, z) {
+                        println!("{}", cell.value);
+                    } else {
+                        println!();
+                    }
+                } else {
+                    eprintln!("print: expected x,y[,z]");
+                }
+            }
+
+            // Formatting
+            "width" => {
+                let parts: Vec<&str> = arg.split_whitespace().collect();
+                if parts.len() == 2 {
+                    if let (Ok(col), Ok(w)) = (parts[0].parse::<usize>(), parts[1].parse::<usize>()) {
+                        sheet.set_width(col, sheet.cur_z, w);
+                    } else {
+                        eprintln!("width: expected col width");
+                    }
+                } else {
+                    eprintln!("width: expected col width");
+                }
+            }
+            "precision" => {
+                let parts: Vec<&str> = arg.split_whitespace().collect();
+                if parts.len() == 2 {
+                    if let (Ok(col), Ok(prec)) = (parts[0].parse::<usize>(), parts[1].parse::<i32>()) {
+                        for y in 0..sheet.dim_y {
+                            let cell = sheet.get_or_create_cell(col, y, sheet.cur_z);
+                            cell.precision = prec;
+                        }
+                    } else {
+                        eprintln!("precision: expected col precision");
+                    }
+                } else {
+                    eprintln!("precision: expected col precision");
+                }
+            }
+
+            // Sort
+            "sort" => {
+                if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                    let parts: Vec<&str> = arg.split_whitespace().collect();
+                    let sort_col = parts.first()
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(sheet.cur_x);
+                    let ascending = parts.get(1)
+                        .map(|s| !s.starts_with('d'))
+                        .unwrap_or(true);
+                    sheet.sort_block(x1, y1, z1, x2, y2, z2, sort_col, ascending);
+                } else {
+                    eprintln!("sort: no block marked (use from/to first)");
+                }
+            }
+
+            // Load/save
+            "load" => {
+                let path = std::path::Path::new(arg);
+                match load_file(sheet, path, false) {
+                    Ok(()) => {}
+                    Err(e) => eprintln!("load: {}", e),
+                }
+            }
+            "load-csv" => {
+                match load_csv(sheet, arg) {
+                    Ok(()) => {}
+                    Err(e) => eprintln!("load-csv: {}", e),
+                }
+            }
+            "save" => {
+                let filename = if arg.is_empty() {
+                    sheet.name.clone().unwrap_or_else(|| "sheet.tp".to_string())
+                } else {
+                    arg.to_string()
+                };
+                if filename.ends_with(".tpz") {
+                    match fileio::save_tpz(sheet, &filename) {
+                        Ok(_) => { sheet.changed = false; }
+                        Err(e) => eprintln!("save: {}", e),
+                    }
+                } else if filename.ends_with(".xlsx") {
+                    match fileio::xlsx::save_xlsx(sheet, &filename) {
+                        Ok(_) => { sheet.changed = false; }
+                        Err(e) => eprintln!("save: {}", e),
+                    }
+                } else {
+                    match fileio::save_port(sheet, &filename) {
+                        Ok(_) => { sheet.changed = false; }
+                        Err(e) => eprintln!("save: {}", e),
                     }
                 }
             }
             "save-csv" => {
-                teapotlib::fileio::save_csv(sheet, arg, ',',
-                    0, 0, 0, sheet.dim_x.saturating_sub(1), sheet.dim_y.saturating_sub(1), 0)?;
+                let x2 = sheet.dim_x.saturating_sub(1);
+                let y2 = sheet.dim_y.saturating_sub(1);
+                match fileio::save_csv(sheet, arg, ',', 0, 0, 0, x2, y2, 0) {
+                    Ok(_) => {}
+                    Err(e) => eprintln!("save-csv: {}", e),
+                }
             }
-            "load-csv" => {
-                load_csv(sheet, arg)?;
+            "save-html" => {
+                let (x2, y2, z2) = (sheet.dim_x.saturating_sub(1), sheet.dim_y.saturating_sub(1), sheet.dim_z.saturating_sub(1));
+                match fileio::save_html(sheet, arg, false, 0, 0, 0, x2, y2, z2) {
+                    Ok(_) => {}
+                    Err(e) => eprintln!("save-html: {}", e),
+                }
+            }
+            "save-latex" => {
+                let (x2, y2, z2) = (sheet.dim_x.saturating_sub(1), sheet.dim_y.saturating_sub(1), sheet.dim_z.saturating_sub(1));
+                match fileio::save_latex(sheet, arg, false, 0, 0, 0, x2, y2, z2) {
+                    Ok(_) => {}
+                    Err(e) => eprintln!("save-latex: {}", e),
+                }
+            }
+            "save-context" => {
+                let (x2, y2, z2) = (sheet.dim_x.saturating_sub(1), sheet.dim_y.saturating_sub(1), sheet.dim_z.saturating_sub(1));
+                match fileio::save_context(sheet, arg, false, 0, 0, 0, x2, y2, z2) {
+                    Ok(_) => {}
+                    Err(e) => eprintln!("save-context: {}", e),
+                }
+            }
+            "save-xlsx" => {
+                match fileio::xlsx::save_xlsx(sheet, arg) {
+                    Ok(_) => {}
+                    Err(e) => eprintln!("save-xlsx: {}", e),
+                }
+            }
+            "save-text" => {
+                let x2 = sheet.dim_x.saturating_sub(1);
+                let y2 = sheet.dim_y.saturating_sub(1);
+                match fileio::save_text(sheet, arg, 0, 0, 0, x2, y2, 0) {
+                    Ok(_) => {}
+                    Err(e) => eprintln!("save-text: {}", e),
+                }
             }
             _ => {
                 eprintln!("Unknown batch command: {}", cmd);

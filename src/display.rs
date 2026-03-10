@@ -422,7 +422,7 @@ fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
             state.should_quit = true;
         }
         "wq" => {
-            let filename = sheet.name.clone().unwrap_or_else(|| "sheet.tpa".to_string());
+            let filename = sheet.name.clone().unwrap_or_else(|| "sheet.tp".to_string());
             match save_by_extension(sheet, &filename) {
                 Ok(count) => {
                     sheet.name = Some(filename.clone());
@@ -437,7 +437,7 @@ fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
         }
         "w" | "write" => {
             let filename = if arg.is_empty() {
-                sheet.name.clone().unwrap_or_else(|| "sheet.tpa".to_string())
+                sheet.name.clone().unwrap_or_else(|| "sheet.tp".to_string())
             } else {
                 arg.to_string()
             };
@@ -645,6 +645,36 @@ fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
             sheet.update();
             state.status_message = format!("Deleted column {}", sheet.cur_x);
         }
+        "sort" => {
+            if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                // Parse: :sort [col] [asc|desc]
+                let parts: Vec<&str> = arg.split_whitespace().collect();
+                let sort_col = parts.first()
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(sheet.cur_x);
+                let ascending = parts.get(1)
+                    .map(|s| !s.starts_with('d'))
+                    .unwrap_or(true);
+                sheet.save_undo();
+                sheet.sort_block(x1, y1, z1, x2, y2, z2, sort_col, ascending);
+                let dir = if ascending { "ascending" } else { "descending" };
+                state.status_message = format!("Sorted by column {} {}", sort_col, dir);
+            } else {
+                state.status_message = String::from("No block marked. Press m twice to mark a block.");
+            }
+        }
+        "move" => {
+            if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                sheet.save_undo();
+                let count = sheet.move_block(x1, y1, z1, x2, y2, z2,
+                    sheet.cur_x, sheet.cur_y, sheet.cur_z);
+                sheet.clear_mark();
+                state.status_message = format!("Moved {} cells to ({},{},{})",
+                    count, sheet.cur_x, sheet.cur_y, sheet.cur_z);
+            } else {
+                state.status_message = String::from("No block marked. Press m twice to mark a block.");
+            }
+        }
         "undo" => {
             if sheet.undo() {
                 state.status_message = String::from("Undone");
@@ -800,7 +830,7 @@ fn render_help(f: &mut Frame, area: Rect) {
     Esc           Cancel editing
 
   Commands (press : to enter command mode)
-    :w [file]     Save (.tpa/.tpz/.xlsx) :o <file>  Open file
+    :w [file]     Save (.tp/.tpz/.xlsx)  :o <file>  Open file
     :q            Quit                  :q!        Force quit
     :wq           Save and quit         :goto x,y  Move to cell
     :width N      Set column width      :align l/r/c/a
@@ -808,7 +838,8 @@ fn render_help(f: &mut Frame, area: Rect) {
     :ir/:dr       Insert/delete row     :ic/:dc    Insert/delete col
     :yank         Yank block to clip    :paste     Paste at cursor
     :undo         Undo last change      :redo      Redo last undo
-    :copy         Copy block to cursor  :clear     Clear marked block
+    :copy         Copy block to cursor  :move      Move block to cursor
+    :clear        Clear marked block    :sort [col] [asc|desc]
     :export-text  Export as plain text  :export-csv   Export as CSV
     :export-html  Export as HTML        :export-latex Export as LaTeX
     :export-context  Export as ConTeXt  :help         Show this help

@@ -1,7 +1,25 @@
 //! Sheet module - defines the spreadsheet data structure
 
 use crate::token::Token;
+use std::cmp::Ordering;
 use std::collections::HashMap;
+
+/// Compare two Token values for sorting: Empty < numbers < strings
+fn cmp_token_values(a: Option<&Token>, b: Option<&Token>) -> Ordering {
+    match (a, b) {
+        (None, None) | (Some(Token::Empty), Some(Token::Empty)) => Ordering::Equal,
+        (None | Some(Token::Empty), _) => Ordering::Less,
+        (_, None | Some(Token::Empty)) => Ordering::Greater,
+        (Some(Token::Integer(i)), Some(Token::Integer(j))) => i.cmp(j),
+        (Some(Token::Float(f1)), Some(Token::Float(f2))) => f1.partial_cmp(f2).unwrap_or(Ordering::Equal),
+        (Some(Token::Integer(i)), Some(Token::Float(f))) => (*i as f64).partial_cmp(f).unwrap_or(Ordering::Equal),
+        (Some(Token::Float(f)), Some(Token::Integer(i))) => f.partial_cmp(&(*i as f64)).unwrap_or(Ordering::Equal),
+        (Some(Token::String(s1)), Some(Token::String(s2))) => s1.cmp(s2),
+        (Some(Token::Integer(_) | Token::Float(_)), Some(Token::String(_))) => Ordering::Less,
+        (Some(Token::String(_)), Some(Token::Integer(_) | Token::Float(_))) => Ordering::Greater,
+        _ => Ordering::Equal,
+    }
+}
 
 /// Cell represents a single cell in the spreadsheet
 #[derive(Debug, Clone)]
@@ -544,6 +562,79 @@ impl Sheet {
         self.mark2_y = None;
         self.mark2_z = None;
         self.marking = false;
+    }
+
+    /// Sort rows in a block by a key column
+    pub fn sort_block(&mut self, x1: usize, y1: usize, z1: usize,
+                      x2: usize, y2: usize, _z2: usize,
+                      sort_col: usize, ascending: bool) {
+        // Collect rows as vectors of (x, cell) pairs
+        let mut rows: Vec<(usize, Vec<((usize, usize), Cell)>)> = Vec::new();
+        for y in y1..=y2 {
+            let mut row_cells = Vec::new();
+            for x in x1..=x2 {
+                if let Some(cell) = self.cells.remove(&(x, y, z1)) {
+                    row_cells.push(((x, y), cell));
+                }
+            }
+            rows.push((y, row_cells));
+        }
+
+        // Sort by the value at sort_col
+        rows.sort_by(|a, b| {
+            let val_a = a.1.iter()
+                .find(|((x, _), _)| *x == sort_col)
+                .map(|(_, c)| &c.value);
+            let val_b = b.1.iter()
+                .find(|((x, _), _)| *x == sort_col)
+                .map(|(_, c)| &c.value);
+            let ord = cmp_token_values(val_a, val_b);
+            if ascending { ord } else { ord.reverse() }
+        });
+
+        // Put rows back at sequential y positions
+        for (new_y_offset, (_old_y, row_cells)) in rows.into_iter().enumerate() {
+            let new_y = y1 + new_y_offset;
+            for ((x, _old_y), cell) in row_cells {
+                self.cells.insert((x, new_y, z1), cell);
+            }
+        }
+
+        self.changed = true;
+        self.cachelabels();
+        self.update();
+    }
+
+    /// Move a block from source to destination (copy + clear source)
+    pub fn move_block(&mut self, x1: usize, y1: usize, z1: usize,
+                      x2: usize, y2: usize, z2: usize,
+                      to_x: usize, to_y: usize, to_z: usize) -> usize {
+        // Collect source cells with relative positions
+        let mut temp: Vec<((usize, usize, usize), Cell)> = Vec::new();
+        for z in z1..=z2 {
+            for y in y1..=y2 {
+                for x in x1..=x2 {
+                    if let Some(cell) = self.cells.remove(&(x, y, z)) {
+                        temp.push(((x - x1, y - y1, z - z1), cell));
+                    }
+                }
+            }
+        }
+        // Place at destination
+        let count = temp.len();
+        for ((dx, dy, dz), cell) in temp {
+            let nx = to_x + dx;
+            let ny = to_y + dy;
+            let nz = to_z + dz;
+            self.cells.insert((nx, ny, nz), cell);
+            if nx >= self.dim_x { self.dim_x = nx + 1; }
+            if ny >= self.dim_y { self.dim_y = ny + 1; }
+            if nz >= self.dim_z { self.dim_z = nz + 1; }
+        }
+        self.changed = true;
+        self.cachelabels();
+        self.update();
+        count
     }
 
     /// Save a snapshot of all cell data for undo (call before mutating)

@@ -17,7 +17,9 @@
 # Ignore rust build files
 /target
 # Ignore test spreadsheet files at top level
+/*.tp
 /*.tpa
 /*.tpz
+/*.xlsx
 # Ignore Claude Code local settings
 .claude/

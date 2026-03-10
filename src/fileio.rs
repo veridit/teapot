@@ -27,7 +27,7 @@ pub fn save_xdr(_sheet: &Sheet, _filename: &str) -> Result<usize> {
     bail!("XDR format not yet implemented")
 }
 
-/// Load a sheet from a portable ASCII file (.tpa)
+/// Load a sheet from a portable ASCII file (.tp/.tpa)
 pub fn load_port(sheet: &mut Sheet, filename: &str) -> Result<()> {
     let file = fs::File::open(filename)?;
     let reader = BufReader::new(file);
@@ -163,7 +163,7 @@ fn parse_cell_line(s: &str, sheet: &mut Sheet, line_num: usize) -> Result<()> {
     Ok(())
 }
 
-/// Save a sheet to a portable ASCII file (.tpa)
+/// Save a sheet to a portable ASCII file (.tp/.tpa)
 pub fn save_port(sheet: &Sheet, filename: &str) -> Result<usize> {
     let mut file = fs::File::create(filename)?;
     let mut count = 0;
@@ -472,8 +472,8 @@ pub fn load_file(sheet: &mut Sheet, path: &std::path::Path, use_xdr: bool) -> Re
     if let Some(extension) = path.extension().and_then(|e| e.to_str()) {
         match extension.to_lowercase().as_str() {
             "tpz" => load_tpz(sheet, filename)?,
-            "tpa" => {
-                // Auto-detect gzip on .tpa files
+            "tp" | "tpa" => {
+                // Auto-detect gzip on .tp/.tpa files
                 if is_gzip(filename) {
                     load_tpz(sheet, filename)?;
                 } else {
