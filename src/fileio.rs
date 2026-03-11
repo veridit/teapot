@@ -13,19 +13,13 @@ pub mod html;
 pub mod latex;
 pub mod context;
 pub mod sc;
-pub mod wk1;
 pub mod calamine_import;
 pub mod xlsx;
+pub mod xdr;
+pub mod tbl;
 
-/// Load a sheet from an XDR file
-pub fn load_xdr(_sheet: &mut Sheet, _filename: &str) -> Result<()> {
-    bail!("XDR format not yet implemented")
-}
-
-/// Save a sheet to an XDR file
-pub fn save_xdr(_sheet: &Sheet, _filename: &str) -> Result<usize> {
-    bail!("XDR format not yet implemented")
-}
+pub use xdr::{load_xdr, save_xdr};
+pub use tbl::save_tbl;
 
 /// Load a sheet from a portable ASCII file (.tp/.tpa)
 pub fn load_port(sheet: &mut Sheet, filename: &str) -> Result<()> {
@@ -347,7 +341,6 @@ pub use html::save_html;
 pub use latex::save_latex;
 pub use context::save_context;
 pub use sc::load_sc;
-pub use wk1::load_wk1;
 
 /// Save a sheet to a gzip-compressed portable ASCII file (.tpz)
 pub fn save_tpz(sheet: &Sheet, filename: &str) -> Result<usize> {
@@ -481,7 +474,6 @@ pub fn load_file(sheet: &mut Sheet, path: &std::path::Path, use_xdr: bool) -> Re
                 }
             }
             "sc" => load_sc(sheet, filename)?,
-            "wk1" => load_wk1(sheet, filename)?,
             "csv" => load_csv(sheet, filename)?,
             "xlsx" | "xls" | "ods" => calamine_import::load_spreadsheet(sheet, filename)?,
             _ => {
@@ -550,6 +542,320 @@ mod tests {
         fs::File::open(tmpfile).unwrap().read_to_string(&mut content).unwrap();
 
         assert!(content.contains("C0 0 0 Ar Ltest :42"));
+
+        std::fs::remove_file(tmpfile).ok();
+    }
+
+    // === B8: File I/O Tests ===
+
+    #[test]
+    fn test_csv_roundtrip() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(42)]);
+        sheet.putcont(1, 0, 0, vec![Token::String("hello".to_string())]);
+        sheet.putcont(0, 1, 0, vec![Token::Float(3.14)]);
+        sheet.update();
+
+        let tmpfile = "/tmp/teapot_test_csv_roundtrip.csv";
+        save_csv(&sheet, tmpfile, ',', 0, 0, 0, 1, 1, 0).unwrap();
+
+        let mut sheet2 = Sheet::new();
+        load_csv(&mut sheet2, tmpfile).unwrap();
+
+        assert_eq!(sheet2.get_cell(0, 0, 0).unwrap().value, Token::Integer(42));
+        assert_eq!(sheet2.get_cell(1, 0, 0).unwrap().value, Token::String("hello".to_string()));
+        assert_eq!(sheet2.get_cell(0, 1, 0).unwrap().value, Token::Float(3.14));
+
+        std::fs::remove_file(tmpfile).ok();
+    }
+
+    #[test]
+    fn test_csv_quoted_fields() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::String("hello, world".to_string())]);
+        sheet.update();
+
+        let tmpfile = "/tmp/teapot_test_csv_quoted.csv";
+        save_csv(&sheet, tmpfile, ',', 0, 0, 0, 0, 0, 0).unwrap();
+
+        let mut sheet2 = Sheet::new();
+        load_csv(&mut sheet2, tmpfile).unwrap();
+
+        assert_eq!(sheet2.get_cell(0, 0, 0).unwrap().value, Token::String("hello, world".to_string()));
+
+        std::fs::remove_file(tmpfile).ok();
+    }
+
+    #[test]
+    fn test_csv_empty_cells() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(1)]);
+        // (1,0,0) is empty
+        sheet.putcont(2, 0, 0, vec![Token::Integer(3)]);
+        sheet.update();
+
+        let tmpfile = "/tmp/teapot_test_csv_empty.csv";
+        save_csv(&sheet, tmpfile, ',', 0, 0, 0, 2, 0, 0).unwrap();
+
+        let mut content = String::new();
+        fs::File::open(tmpfile).unwrap().read_to_string(&mut content).unwrap();
+        // Should have two commas: "1,,3\n"
+        assert!(content.contains("1,,3"), "got: {:?}", content);
+
+        std::fs::remove_file(tmpfile).ok();
+    }
+
+    #[test]
+    fn test_csv_mixed_types() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(42)]);
+        sheet.putcont(1, 0, 0, vec![Token::Float(3.14)]);
+        sheet.putcont(2, 0, 0, vec![Token::String("text".to_string())]);
+        sheet.update();
+
+        let tmpfile = "/tmp/teapot_test_csv_mixed.csv";
+        save_csv(&sheet, tmpfile, ',', 0, 0, 0, 2, 0, 0).unwrap();
+
+        let mut sheet2 = Sheet::new();
+        load_csv(&mut sheet2, tmpfile).unwrap();
+
+        assert_eq!(sheet2.get_cell(0, 0, 0).unwrap().value, Token::Integer(42));
+        assert_eq!(sheet2.get_cell(2, 0, 0).unwrap().value, Token::String("text".to_string()));
+
+        std::fs::remove_file(tmpfile).ok();
+    }
+
+    #[test]
+    fn test_csv_separator() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(1)]);
+        sheet.putcont(1, 0, 0, vec![Token::Integer(2)]);
+        sheet.update();
+
+        let tmpfile = "/tmp/teapot_test_csv_tsv.csv";
+        save_csv(&sheet, tmpfile, '\t', 0, 0, 0, 1, 0, 0).unwrap();
+
+        let mut content = String::new();
+        fs::File::open(tmpfile).unwrap().read_to_string(&mut content).unwrap();
+        assert!(content.contains("1\t2"), "expected tab separator, got: {:?}", content);
+
+        std::fs::remove_file(tmpfile).ok();
+    }
+
+    #[test]
+    fn test_html_export() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(42)]);
+        sheet.putcont(1, 0, 0, vec![Token::String("hello".to_string())]);
+        sheet.update();
+
+        let tmpfile = "/tmp/teapot_test_html.html";
+        save_html(&sheet, tmpfile, false, 0, 0, 0, 1, 0, 0).unwrap();
+
+        let mut content = String::new();
+        fs::File::open(tmpfile).unwrap().read_to_string(&mut content).unwrap();
+        assert!(content.contains("<table>"), "missing <table> tag");
+        assert!(content.contains("42"), "missing value 42");
+        assert!(content.contains("hello"), "missing value hello");
+        assert!(content.contains("<html>"), "missing <html> wrapper");
+
+        std::fs::remove_file(tmpfile).ok();
+    }
+
+    #[test]
+    fn test_latex_export() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(42)]);
+        sheet.update();
+
+        let tmpfile = "/tmp/teapot_test_latex.tex";
+        save_latex(&sheet, tmpfile, false, 0, 0, 0, 0, 0, 0).unwrap();
+
+        let mut content = String::new();
+        fs::File::open(tmpfile).unwrap().read_to_string(&mut content).unwrap();
+        assert!(content.contains("\\begin{longtable}"), "missing \\begin{{longtable}}");
+        assert!(content.contains("42"), "missing value 42");
+
+        std::fs::remove_file(tmpfile).ok();
+    }
+
+    #[test]
+    fn test_context_export() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(42)]);
+        sheet.update();
+
+        let tmpfile = "/tmp/teapot_test_context.tex";
+        save_context(&sheet, tmpfile, false, 0, 0, 0, 0, 0, 0).unwrap();
+
+        let mut content = String::new();
+        fs::File::open(tmpfile).unwrap().read_to_string(&mut content).unwrap();
+        assert!(content.contains("\\starttable"), "missing \\starttable");
+        assert!(content.contains("42"), "missing value 42");
+
+        std::fs::remove_file(tmpfile).ok();
+    }
+
+    #[test]
+    fn test_text_export() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(42)]);
+        sheet.putcont(1, 0, 0, vec![Token::String("hello".to_string())]);
+        sheet.update();
+
+        let tmpfile = "/tmp/teapot_test_text.txt";
+        save_text(&sheet, tmpfile, 0, 0, 0, 1, 0, 0).unwrap();
+
+        let mut content = String::new();
+        fs::File::open(tmpfile).unwrap().read_to_string(&mut content).unwrap();
+        assert!(content.contains("42"), "missing value 42");
+        assert!(content.contains("hello"), "missing value hello");
+
+        std::fs::remove_file(tmpfile).ok();
+    }
+
+    #[test]
+    fn test_html_body_flag() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(1)]);
+        sheet.update();
+
+        // body=true writes just the table to name.z
+        let tmpfile = "/tmp/teapot_test_html_body";
+        save_html(&sheet, tmpfile, true, 0, 0, 0, 0, 0, 0).unwrap();
+
+        let body_file = format!("{}.0", tmpfile);
+        let mut content = String::new();
+        fs::File::open(&body_file).unwrap().read_to_string(&mut content).unwrap();
+        assert!(content.contains("<table>"), "missing <table> tag in body mode");
+        assert!(!content.contains("<html>"), "body mode should not contain <html>");
+
+        std::fs::remove_file(&body_file).ok();
+    }
+
+    #[test]
+    fn test_export_range() {
+        let mut sheet = Sheet::new();
+        // Fill a 3x3 grid
+        for y in 0..3 {
+            for x in 0..3 {
+                sheet.putcont(x, y, 0, vec![Token::Integer((y * 3 + x) as i64)]);
+            }
+        }
+        sheet.update();
+
+        // Export only the center cell (1,1)
+        let tmpfile = "/tmp/teapot_test_export_range.csv";
+        save_csv(&sheet, tmpfile, ',', 1, 1, 0, 1, 1, 0).unwrap();
+
+        let mut content = String::new();
+        fs::File::open(tmpfile).unwrap().read_to_string(&mut content).unwrap();
+        assert_eq!(content.trim(), "4", "expected just the center value, got: {:?}", content);
+
+        std::fs::remove_file(tmpfile).ok();
+    }
+
+    #[test]
+    fn test_load_nonexistent_file() {
+        let mut sheet = Sheet::new();
+        let result = load_port(&mut sheet, "/tmp/teapot_nonexistent_file_12345.tpa");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_empty_file() {
+        let tmpfile = "/tmp/teapot_test_empty.tpa";
+        fs::File::create(tmpfile).unwrap();
+        let mut sheet = Sheet::new();
+        let result = load_port(&mut sheet, tmpfile);
+        assert!(result.is_ok());
+        std::fs::remove_file(tmpfile).ok();
+    }
+
+    #[test]
+    fn test_csv_with_quotes_in_field() {
+        let tmpfile = "/tmp/teapot_test_csv_quotes.csv";
+        {
+            let mut f = fs::File::create(tmpfile).unwrap();
+            writeln!(f, "\"she said \"\"hello\"\"\"").unwrap();
+        }
+        let mut sheet = Sheet::new();
+        load_csv(&mut sheet, tmpfile).unwrap();
+        assert_eq!(
+            sheet.get_cell(0, 0, 0).unwrap().value,
+            Token::String("she said \"hello\"".to_string())
+        );
+        std::fs::remove_file(tmpfile).ok();
+    }
+
+    #[test]
+    fn test_tpa_invalid_tag() {
+        let tmpfile = "/tmp/teapot_test_invalid_tag.tpa";
+        {
+            let mut f = fs::File::create(tmpfile).unwrap();
+            writeln!(f, "X bad data").unwrap();
+        }
+        let mut sheet = Sheet::new();
+        let result = load_port(&mut sheet, tmpfile);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Unknown tag"));
+        std::fs::remove_file(tmpfile).ok();
+    }
+
+    #[test]
+    fn test_tpz_roundtrip() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(42)]);
+        sheet.putcont(1, 0, 0, vec![Token::String("compressed".to_string())]);
+        sheet.update();
+
+        let tmpfile = "/tmp/teapot_test_tpz_roundtrip.tpz";
+        save_tpz(&sheet, tmpfile).unwrap();
+
+        let mut sheet2 = Sheet::new();
+        load_tpz(&mut sheet2, tmpfile).unwrap();
+
+        assert_eq!(sheet2.get_cell(0, 0, 0).unwrap().value, Token::Integer(42));
+        assert_eq!(sheet2.get_cell(1, 0, 0).unwrap().value, Token::String("compressed".to_string()));
+
+        std::fs::remove_file(tmpfile).ok();
+    }
+
+    #[test]
+    fn test_csv_unicode() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::String("héllo wörld 日本語".to_string())]);
+        sheet.update();
+
+        let tmpfile = "/tmp/teapot_test_csv_unicode.csv";
+        save_csv(&sheet, tmpfile, ',', 0, 0, 0, 0, 0, 0).unwrap();
+
+        let mut sheet2 = Sheet::new();
+        load_csv(&mut sheet2, tmpfile).unwrap();
+
+        assert_eq!(
+            sheet2.get_cell(0, 0, 0).unwrap().value,
+            Token::String("héllo wörld 日本語".to_string())
+        );
+
+        std::fs::remove_file(tmpfile).ok();
+    }
+
+    #[test]
+    fn test_tpa_multisheet() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(10)]);
+        sheet.putcont(0, 0, 1, vec![Token::Integer(20)]);
+        sheet.update();
+
+        let tmpfile = "/tmp/teapot_test_multisheet.tpa";
+        save_port(&sheet, tmpfile).unwrap();
+
+        let mut sheet2 = Sheet::new();
+        load_port(&mut sheet2, tmpfile).unwrap();
+
+        assert_eq!(sheet2.get_cell(0, 0, 0).unwrap().value, Token::Integer(10));
+        assert_eq!(sheet2.get_cell(0, 0, 1).unwrap().value, Token::Integer(20));
 
         std::fs::remove_file(tmpfile).ok();
     }

@@ -13,7 +13,7 @@ cargo build              # Build the project
 cargo run                # Run interactive spreadsheet
 cargo run -- file.tpa    # Open a .tpa spreadsheet file
 cargo run -- file.csv    # Open a CSV file
-cargo test               # Run tests (64 tests)
+cargo test               # Run tests (207 tests)
 cargo clippy             # Lint
 ```
 
@@ -37,7 +37,7 @@ The parser is a recursive descent evaluator that evaluates on the fly (no AST). 
 - **`functions.rs`** — 42 built-in functions: math, string, cell references (@, &, x, y, z), aggregates (sum, n, min, max), type conversion, utility.
 - **`sheet.rs`** — `Sheet` (HashMap-based 3D grid), `Cell`, `Adjust`, `Direction`. Key methods: `update()`, `eval_cell()`, `getvalue()`, `putcont()`, `findlabel()`, `cachelabels()`.
 - **`display.rs`** — Terminal UI (ratatui/crossterm). Three input modes: Normal, Editing, Command. Editing scans input → stores tokens → runs update().
-- **`fileio.rs`** — Portable ASCII (.tpa) load/save, CSV load/save, text export. Stubs for XDR, HTML, LaTeX, ConTeXt, SC, WK1.
+- **`fileio.rs`** — Portable ASCII (.tpa/.tpz) load/save, CSV load/save, text export, HTML/LaTeX/ConTeXt/TBL export, XDR load, SC import, XLSX/XLS/ODS import (via calamine).
 
 ### Key Design Decisions
 
@@ -50,8 +50,6 @@ The parser is a recursive descent evaluator that evaluates on the fly (no AST). 
 
 ## What Still Needs Work
 
-- File formats: XDR, SC, WK1, HTML export, LaTeX export, ConTeXt export
-- Sheet operations: insert/delete rows/cols, sort, copy/move blocks
 - Full UI: all keyboard commands, menus, help system, mouse support
 - Batch mode: most commands are stubs
 - Refer to TODO.md for the phased migration plan

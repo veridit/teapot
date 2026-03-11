@@ -546,6 +546,137 @@ impl Sheet {
         self.changed = true;
     }
 
+    /// Insert a cube (rectangular block), shifting cells in the given direction
+    pub fn insert_cube(&mut self, x1: usize, y1: usize, z1: usize,
+                       x2: usize, y2: usize, z2: usize, direction: Direction) {
+        let mut to_move: Vec<((usize, usize, usize), Cell)> = Vec::new();
+
+        match direction {
+            Direction::X => {
+                let block_width = x2 - x1 + 1;
+                // Collect cells that are in the y/z range and at x >= x1
+                let keys: Vec<_> = self.cells.keys()
+                    .filter(|&&(x, y, z)| x >= x1 && y >= y1 && y <= y2 && z >= z1 && z <= z2)
+                    .cloned()
+                    .collect();
+                let mut keys_sorted = keys;
+                keys_sorted.sort_by(|a, b| b.0.cmp(&a.0)); // descending x
+                for key in keys_sorted {
+                    if let Some(cell) = self.cells.remove(&key) {
+                        to_move.push(((key.0 + block_width, key.1, key.2), cell));
+                    }
+                }
+                self.dim_x += block_width;
+            }
+            Direction::Y => {
+                let block_height = y2 - y1 + 1;
+                let keys: Vec<_> = self.cells.keys()
+                    .filter(|&&(x, y, z)| y >= y1 && x >= x1 && x <= x2 && z >= z1 && z <= z2)
+                    .cloned()
+                    .collect();
+                let mut keys_sorted = keys;
+                keys_sorted.sort_by(|a, b| b.1.cmp(&a.1)); // descending y
+                for key in keys_sorted {
+                    if let Some(cell) = self.cells.remove(&key) {
+                        to_move.push(((key.0, key.1 + block_height, key.2), cell));
+                    }
+                }
+                self.dim_y += block_height;
+            }
+            Direction::Z => {
+                let block_depth = z2 - z1 + 1;
+                let keys: Vec<_> = self.cells.keys()
+                    .filter(|&&(x, y, z)| z >= z1 && x >= x1 && x <= x2 && y >= y1 && y <= y2)
+                    .cloned()
+                    .collect();
+                let mut keys_sorted = keys;
+                keys_sorted.sort_by(|a, b| b.2.cmp(&a.2)); // descending z
+                for key in keys_sorted {
+                    if let Some(cell) = self.cells.remove(&key) {
+                        to_move.push(((key.0, key.1, key.2 + block_depth), cell));
+                    }
+                }
+                self.dim_z += block_depth;
+            }
+        }
+
+        for (key, cell) in to_move {
+            self.cells.insert(key, cell);
+        }
+        self.changed = true;
+        self.cachelabels();
+    }
+
+    /// Delete a cube (rectangular block), shifting cells back in the given direction
+    pub fn delete_cube(&mut self, x1: usize, y1: usize, z1: usize,
+                       x2: usize, y2: usize, z2: usize, direction: Direction) {
+        // First, remove cells in the block
+        let block_keys: Vec<_> = self.cells.keys()
+            .filter(|&&(x, y, z)| x >= x1 && x <= x2 && y >= y1 && y <= y2 && z >= z1 && z <= z2)
+            .cloned()
+            .collect();
+        for key in block_keys {
+            self.cells.remove(&key);
+        }
+
+        let mut to_move: Vec<((usize, usize, usize), Cell)> = Vec::new();
+
+        match direction {
+            Direction::X => {
+                let block_width = x2 - x1 + 1;
+                // Shift cells left that are beyond the block in x, within y/z range
+                let keys: Vec<_> = self.cells.keys()
+                    .filter(|&&(x, y, z)| x > x2 && y >= y1 && y <= y2 && z >= z1 && z <= z2)
+                    .cloned()
+                    .collect();
+                let mut keys_sorted = keys;
+                keys_sorted.sort_by(|a, b| a.0.cmp(&b.0)); // ascending x
+                for key in keys_sorted {
+                    if let Some(cell) = self.cells.remove(&key) {
+                        to_move.push(((key.0 - block_width, key.1, key.2), cell));
+                    }
+                }
+                if self.dim_x >= block_width { self.dim_x -= block_width; }
+            }
+            Direction::Y => {
+                let block_height = y2 - y1 + 1;
+                let keys: Vec<_> = self.cells.keys()
+                    .filter(|&&(x, y, z)| y > y2 && x >= x1 && x <= x2 && z >= z1 && z <= z2)
+                    .cloned()
+                    .collect();
+                let mut keys_sorted = keys;
+                keys_sorted.sort_by(|a, b| a.1.cmp(&b.1)); // ascending y
+                for key in keys_sorted {
+                    if let Some(cell) = self.cells.remove(&key) {
+                        to_move.push(((key.0, key.1 - block_height, key.2), cell));
+                    }
+                }
+                if self.dim_y >= block_height { self.dim_y -= block_height; }
+            }
+            Direction::Z => {
+                let block_depth = z2 - z1 + 1;
+                let keys: Vec<_> = self.cells.keys()
+                    .filter(|&&(x, y, z)| z > z2 && x >= x1 && x <= x2 && y >= y1 && y <= y2)
+                    .cloned()
+                    .collect();
+                let mut keys_sorted = keys;
+                keys_sorted.sort_by(|a, b| a.2.cmp(&b.2)); // ascending z
+                for key in keys_sorted {
+                    if let Some(cell) = self.cells.remove(&key) {
+                        to_move.push(((key.0, key.1, key.2 - block_depth), cell));
+                    }
+                }
+                if self.dim_z >= block_depth { self.dim_z -= block_depth; }
+            }
+        }
+
+        for (key, cell) in to_move {
+            self.cells.insert(key, cell);
+        }
+        self.changed = true;
+        self.cachelabels();
+    }
+
     /// Copy a block of cells to a new location
     pub fn copy_block(&mut self, x1: usize, y1: usize, z1: usize,
                       x2: usize, y2: usize, z2: usize,
@@ -1249,5 +1380,195 @@ mod tests {
         // Disable clock
         let enabled = sheet.toggle_clock(0, 0, 0);
         assert!(!enabled);
+    }
+
+    #[test]
+    fn test_insert_cube_x() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(1)]);
+        sheet.putcont(1, 0, 0, vec![Token::Integer(2)]);
+        sheet.putcont(2, 0, 0, vec![Token::Integer(3)]);
+        sheet.update();
+
+        // Insert a 1-wide cube at x=1, shifting right within y=0, z=0
+        sheet.insert_cube(1, 0, 0, 1, 0, 0, Direction::X);
+
+        assert_eq!(sheet.get_cell(0, 0, 0).unwrap().value, Token::Integer(1));
+        assert!(sheet.get_cell(1, 0, 0).is_none()); // new empty
+        assert_eq!(sheet.get_cell(2, 0, 0).unwrap().value, Token::Integer(2));
+        assert_eq!(sheet.get_cell(3, 0, 0).unwrap().value, Token::Integer(3));
+    }
+
+    #[test]
+    fn test_insert_cube_y() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(1)]);
+        sheet.putcont(0, 1, 0, vec![Token::Integer(2)]);
+        sheet.putcont(0, 2, 0, vec![Token::Integer(3)]);
+        sheet.update();
+
+        // Insert a 1-tall cube at y=1, shifting down
+        sheet.insert_cube(0, 1, 0, 0, 1, 0, Direction::Y);
+
+        assert_eq!(sheet.get_cell(0, 0, 0).unwrap().value, Token::Integer(1));
+        assert!(sheet.get_cell(0, 1, 0).is_none());
+        assert_eq!(sheet.get_cell(0, 2, 0).unwrap().value, Token::Integer(2));
+        assert_eq!(sheet.get_cell(0, 3, 0).unwrap().value, Token::Integer(3));
+    }
+
+    #[test]
+    fn test_insert_cube_z() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(1)]);
+        sheet.putcont(0, 0, 1, vec![Token::Integer(2)]);
+        sheet.putcont(0, 0, 2, vec![Token::Integer(3)]);
+        sheet.update();
+
+        // Insert a 1-deep cube at z=1, shifting deeper
+        sheet.insert_cube(0, 0, 1, 0, 0, 1, Direction::Z);
+
+        assert_eq!(sheet.get_cell(0, 0, 0).unwrap().value, Token::Integer(1));
+        assert!(sheet.get_cell(0, 0, 1).is_none());
+        assert_eq!(sheet.get_cell(0, 0, 2).unwrap().value, Token::Integer(2));
+        assert_eq!(sheet.get_cell(0, 0, 3).unwrap().value, Token::Integer(3));
+    }
+
+    #[test]
+    fn test_delete_cube_x() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(1)]);
+        sheet.putcont(1, 0, 0, vec![Token::Integer(2)]);
+        sheet.putcont(2, 0, 0, vec![Token::Integer(3)]);
+        sheet.update();
+
+        // Delete column 1, shift left
+        sheet.delete_cube(1, 0, 0, 1, 0, 0, Direction::X);
+
+        assert_eq!(sheet.get_cell(0, 0, 0).unwrap().value, Token::Integer(1));
+        assert_eq!(sheet.get_cell(1, 0, 0).unwrap().value, Token::Integer(3));
+    }
+
+    #[test]
+    fn test_delete_cube_y() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(1)]);
+        sheet.putcont(0, 1, 0, vec![Token::Integer(2)]);
+        sheet.putcont(0, 2, 0, vec![Token::Integer(3)]);
+        sheet.update();
+
+        // Delete row 1, shift up
+        sheet.delete_cube(0, 1, 0, 0, 1, 0, Direction::Y);
+
+        assert_eq!(sheet.get_cell(0, 0, 0).unwrap().value, Token::Integer(1));
+        assert_eq!(sheet.get_cell(0, 1, 0).unwrap().value, Token::Integer(3));
+    }
+
+    #[test]
+    fn test_delete_cube_z() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(1)]);
+        sheet.putcont(0, 0, 1, vec![Token::Integer(2)]);
+        sheet.putcont(0, 0, 2, vec![Token::Integer(3)]);
+        sheet.update();
+
+        // Delete layer 1, shift forward
+        sheet.delete_cube(0, 0, 1, 0, 0, 1, Direction::Z);
+
+        assert_eq!(sheet.get_cell(0, 0, 0).unwrap().value, Token::Integer(1));
+        assert_eq!(sheet.get_cell(0, 0, 1).unwrap().value, Token::Integer(3));
+    }
+
+    #[test]
+    fn test_insert_row_at_zero() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(1)]);
+        sheet.putcont(0, 1, 0, vec![Token::Integer(2)]);
+        sheet.update();
+
+        sheet.insert_row(0, 0);
+
+        assert!(sheet.get_cell(0, 0, 0).is_none());
+        assert_eq!(sheet.get_cell(0, 1, 0).unwrap().value, Token::Integer(1));
+        assert_eq!(sheet.get_cell(0, 2, 0).unwrap().value, Token::Integer(2));
+    }
+
+    #[test]
+    fn test_delete_last_row() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(1)]);
+        sheet.update();
+
+        sheet.delete_row(0, 0);
+
+        assert!(sheet.get_cell(0, 0, 0).is_none());
+    }
+
+    #[test]
+    fn test_copy_block_cross_sheet() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(42)]);
+        sheet.putcont(1, 0, 0, vec![Token::Integer(99)]);
+        sheet.update();
+
+        sheet.copy_block(0, 0, 0, 1, 0, 0, 0, 0, 1);
+
+        assert_eq!(sheet.get_cell(0, 0, 1).unwrap().value, Token::Integer(42));
+        assert_eq!(sheet.get_cell(1, 0, 1).unwrap().value, Token::Integer(99));
+        // Original untouched
+        assert_eq!(sheet.get_cell(0, 0, 0).unwrap().value, Token::Integer(42));
+    }
+
+    #[test]
+    fn test_sort_descending() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(1)]);
+        sheet.putcont(0, 1, 0, vec![Token::Integer(3)]);
+        sheet.putcont(0, 2, 0, vec![Token::Integer(2)]);
+        sheet.update();
+
+        sheet.sort_block(0, 0, 0, 0, 2, 0, 0, false);
+
+        assert_eq!(sheet.get_cell(0, 0, 0).unwrap().value, Token::Integer(3));
+        assert_eq!(sheet.get_cell(0, 1, 0).unwrap().value, Token::Integer(2));
+        assert_eq!(sheet.get_cell(0, 2, 0).unwrap().value, Token::Integer(1));
+    }
+
+    #[test]
+    fn test_move_block_basic() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(42)]);
+        sheet.update();
+
+        sheet.move_block(0, 0, 0, 0, 0, 0, 5, 5, 0);
+
+        assert!(sheet.get_cell(0, 0, 0).is_none());
+        assert_eq!(sheet.get_cell(5, 5, 0).unwrap().value, Token::Integer(42));
+    }
+
+    #[test]
+    fn test_mirror_block_z() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(1)]);
+        sheet.putcont(0, 0, 1, vec![Token::Integer(2)]);
+        sheet.putcont(0, 0, 2, vec![Token::Integer(3)]);
+        sheet.update();
+
+        sheet.mirror_block(0, 0, 0, 0, 0, 2, Direction::Z);
+
+        assert_eq!(sheet.get_cell(0, 0, 0).unwrap().value, Token::Integer(3));
+        assert_eq!(sheet.get_cell(0, 0, 1).unwrap().value, Token::Integer(2));
+        assert_eq!(sheet.get_cell(0, 0, 2).unwrap().value, Token::Integer(1));
+    }
+
+    #[test]
+    fn test_clear_returns_count() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(1)]);
+        sheet.putcont(1, 0, 0, vec![Token::Integer(2)]);
+        sheet.putcont(2, 0, 0, vec![Token::Integer(3)]);
+        sheet.update();
+
+        let count = sheet.clear_block(0, 0, 0, 2, 0, 0);
+        assert_eq!(count, 3);
     }
 }

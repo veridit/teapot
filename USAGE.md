@@ -151,6 +151,12 @@ Mark a block by pressing `m` at two corners. Then:
 | `:dr` / `:delete-row` | Delete row at cursor |
 | `:ic` / `:insert-col` | Insert column at cursor |
 | `:dc` / `:delete-col` | Delete column at cursor |
+| `:insert-cube-x` | Insert cube shifting right (requires marked block) |
+| `:insert-cube-y` | Insert cube shifting down (requires marked block) |
+| `:insert-cube-z` | Insert cube shifting deeper (requires marked block) |
+| `:delete-cube-x` | Delete cube shifting left (requires marked block) |
+| `:delete-cube-y` | Delete cube shifting up (requires marked block) |
+| `:delete-cube-z` | Delete cube shifting forward (requires marked block) |
 
 ### Export
 
@@ -163,6 +169,7 @@ If a block is marked, export commands export only the marked range. Otherwise th
 | `:export-html <file>` | Export as HTML |
 | `:export-latex <file>` | Export as LaTeX |
 | `:export-context <file>` | Export as ConTeXt |
+| `:export-tbl <file>` | Export as troff tbl |
 
 ### Clocked Cells
 
@@ -272,6 +279,13 @@ EOF
 | `save-context <file>` | Save as ConTeXt |
 | `save-xlsx <file>` | Save as XLSX |
 | `save-text <file>` | Save as plain text |
+| `save-tbl <file>` | Save as troff tbl |
+| `insert-cube-x` | Insert cube shifting right (requires mark) |
+| `insert-cube-y` | Insert cube shifting down (requires mark) |
+| `insert-cube-z` | Insert cube shifting deeper (requires mark) |
+| `delete-cube-x` | Delete cube shifting left (requires mark) |
+| `delete-cube-y` | Delete cube shifting up (requires mark) |
+| `delete-cube-z` | Delete cube shifting forward (requires mark) |
 
 Save/export commands in batch mode also respect the mark range set via `from`/`to`.
 
@@ -370,6 +384,7 @@ All aggregate functions take two location arguments defining a range.
 | `float(n)` | Convert to float |
 | `frac(n)` | Fractional part (e.g. `frac(3.14)` = 0.14) |
 | `string(n)` | Convert to string |
+| `string(location)` | Format cell value using the cell's own precision/scientific settings |
 | `string(n, precision)` | Format with decimal places (e.g. `string(3.14159, 2)` = "3.14") |
 | `string(n, precision, mode)` | Mode 0 = fixed, non-zero = scientific notation |
 | `error("msg")` | Create an error value |

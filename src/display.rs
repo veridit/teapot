@@ -24,8 +24,12 @@ const COMMANDS: &[&str] = &[
     "q", "quit", "q!", "wq", "w", "write", "goto", "o", "open",
     "width", "precision", "bold", "underline", "align",
     "export-html", "export-latex", "export-context", "export-csv", "export-text",
+    "export-tbl", "save-tbl",
     "clear", "copy", "move", "ir", "insert-row", "dr", "delete-row",
-    "ic", "insert-col", "dc", "delete-col", "sort", "sort-x", "sort-y", "sort-z",
+    "ic", "insert-col", "dc", "delete-col",
+    "insert-cube-x", "insert-cube-y", "insert-cube-z",
+    "delete-cube-x", "delete-cube-y", "delete-cube-z",
+    "sort", "sort-x", "sort-y", "sort-z",
     "mirror-x", "mirror-y", "mirror-z", "fill",
     "undo", "redo", "yank", "paste", "help",
     "sheet", "sheet-add", "sheet-del", "sheets",
@@ -1836,6 +1840,51 @@ fn process_command(sheet: &mut Sheet, state: &mut DisplayState) {
                         state.status_message = format!("Export failed: {}", e);
                     }
                 }
+            }
+        }
+        "export-tbl" | "save-tbl" => {
+            if arg.is_empty() {
+                state.status_message = String::from("Usage: :export-tbl <file>");
+            } else {
+                let (x1, y1, z1, x2, y2, z2) = get_export_range(sheet);
+                match crate::fileio::save_tbl(sheet, arg, false, x1, y1, z1, x2, y2, z2) {
+                    Ok(count) => {
+                        state.status_message = format!("Exported {} cells to {}", count, arg);
+                    }
+                    Err(e) => {
+                        state.status_message = format!("Export failed: {}", e);
+                    }
+                }
+            }
+        }
+        "insert-cube-x" | "insert-cube-y" | "insert-cube-z" => {
+            if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                sheet.save_undo();
+                let dir = match command {
+                    "insert-cube-x" => crate::sheet::Direction::X,
+                    "insert-cube-y" => crate::sheet::Direction::Y,
+                    _ => crate::sheet::Direction::Z,
+                };
+                sheet.insert_cube(x1, y1, z1, x2, y2, z2, dir);
+                sheet.update();
+                state.status_message = format!("Inserted cube {:?}", dir);
+            } else {
+                state.status_message = String::from("No block marked");
+            }
+        }
+        "delete-cube-x" | "delete-cube-y" | "delete-cube-z" => {
+            if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                sheet.save_undo();
+                let dir = match command {
+                    "delete-cube-x" => crate::sheet::Direction::X,
+                    "delete-cube-y" => crate::sheet::Direction::Y,
+                    _ => crate::sheet::Direction::Z,
+                };
+                sheet.delete_cube(x1, y1, z1, x2, y2, z2, dir);
+                sheet.update();
+                state.status_message = format!("Deleted cube {:?}", dir);
+            } else {
+                state.status_message = String::from("No block marked");
             }
         }
         // Sheet navigation commands

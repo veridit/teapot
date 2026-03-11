@@ -424,6 +424,37 @@ fn process_batch(sheet: &mut Sheet) -> Result<()> {
                     Err(e) => eprintln!("save-text: {}", e),
                 }
             }
+            "save-tbl" => {
+                let (x1, y1, z1, x2, y2, z2) = get_batch_export_range(sheet);
+                match fileio::save_tbl(sheet, arg, false, x1, y1, z1, x2, y2, z2) {
+                    Ok(_) => {}
+                    Err(e) => eprintln!("save-tbl: {}", e),
+                }
+            }
+            "insert-cube-x" | "insert-cube-y" | "insert-cube-z" => {
+                if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                    let dir = match cmd {
+                        "insert-cube-x" => teapotlib::sheet::Direction::X,
+                        "insert-cube-y" => teapotlib::sheet::Direction::Y,
+                        _ => teapotlib::sheet::Direction::Z,
+                    };
+                    sheet.insert_cube(x1, y1, z1, x2, y2, z2, dir);
+                } else {
+                    eprintln!("{}: no block marked", cmd);
+                }
+            }
+            "delete-cube-x" | "delete-cube-y" | "delete-cube-z" => {
+                if let Some((x1, y1, z1, x2, y2, z2)) = sheet.get_mark_range() {
+                    let dir = match cmd {
+                        "delete-cube-x" => teapotlib::sheet::Direction::X,
+                        "delete-cube-y" => teapotlib::sheet::Direction::Y,
+                        _ => teapotlib::sheet::Direction::Z,
+                    };
+                    sheet.delete_cube(x1, y1, z1, x2, y2, z2, dir);
+                } else {
+                    eprintln!("{}: no block marked", cmd);
+                }
+            }
             "search" => {
                 if arg.is_empty() {
                     eprintln!("search: expected pattern");

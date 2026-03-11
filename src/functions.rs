@@ -17,7 +17,7 @@ pub fn call_function(name: &str, args: &[Token], ctx: &mut EvalContext) -> Token
         "int" => func_int(args),
         "float" => func_float(args),
         "frac" => func_frac(args),
-        "string" => func_string(args),
+        "string" => func_string(args, ctx),
 
         // Math
         "abs" => func_abs(args),
@@ -305,9 +305,37 @@ fn func_frac(args: &[Token]) -> Token {
     }
 }
 
-fn func_string(args: &[Token]) -> Token {
+fn func_string(args: &[Token], ctx: &mut EvalContext) -> Token {
     if args.is_empty() {
         return Token::Error("argument expected".to_string());
+    }
+    // string(location) — format cell value using cell's own precision/scientific settings
+    if args.len() == 1 {
+        if let Token::Location(loc) = &args[0] {
+            let (x, y, z) = (loc[0], loc[1], loc[2]);
+            let value = ctx.sheet.getvalue(x, y, z);
+            let (precision, scientific) = ctx.sheet.get_cell(x, y, z)
+                .map(|c| (c.precision, c.scientific))
+                .unwrap_or((-1, false));
+            return match value {
+                Token::Float(f) => {
+                    if precision >= 0 {
+                        if scientific {
+                            Token::String(format!("{:.prec$e}", f, prec = precision as usize))
+                        } else {
+                            Token::String(format!("{:.prec$}", f, prec = precision as usize))
+                        }
+                    } else {
+                        Token::String(f.to_string())
+                    }
+                }
+                Token::Integer(i) => Token::String(i.to_string()),
+                Token::String(_) => value,
+                Token::Empty => Token::String(String::new()),
+                Token::Error(_) => value,
+                _ => Token::Error("wrong argument type for string()".to_string()),
+            };
+        }
     }
     // With precision (and optional mode) arguments
     if args.len() >= 2 {
@@ -1267,5 +1295,517 @@ mod tests {
         let mut ctx = make_ctx(&mut sheet);
         let result = call_function("eval", &[Token::Location([1, 0, 0])], &mut ctx);
         assert_eq!(result, Token::Integer(5));
+    }
+
+    // === B1: Trigonometric & Hyperbolic Functions ===
+
+    #[test]
+    fn test_cos_zero() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(call_function("cos", &[Token::Float(0.0)], &mut ctx), Token::Float(1.0));
+    }
+
+    #[test]
+    fn test_tan_zero() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(call_function("tan", &[Token::Float(0.0)], &mut ctx), Token::Float(0.0));
+    }
+
+    #[test]
+    fn test_asin_valid() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("asin", &[Token::Float(1.0)], &mut ctx);
+        match result {
+            Token::Float(f) => assert!((f - std::f64::consts::FRAC_PI_2).abs() < 1e-10),
+            _ => panic!("expected float"),
+        }
+    }
+
+    #[test]
+    fn test_asin_domain_error() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert!(call_function("asin", &[Token::Float(2.0)], &mut ctx).is_error());
+    }
+
+    #[test]
+    fn test_acos_valid() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(call_function("acos", &[Token::Float(1.0)], &mut ctx), Token::Float(0.0));
+    }
+
+    #[test]
+    fn test_acos_domain_error() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert!(call_function("acos", &[Token::Float(2.0)], &mut ctx).is_error());
+    }
+
+    #[test]
+    fn test_atan_zero() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(call_function("atan", &[Token::Float(0.0)], &mut ctx), Token::Float(0.0));
+    }
+
+    #[test]
+    fn test_sinh_zero() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(call_function("sinh", &[Token::Float(0.0)], &mut ctx), Token::Float(0.0));
+    }
+
+    #[test]
+    fn test_cosh_zero() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(call_function("cosh", &[Token::Float(0.0)], &mut ctx), Token::Float(1.0));
+    }
+
+    #[test]
+    fn test_tanh_zero() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(call_function("tanh", &[Token::Float(0.0)], &mut ctx), Token::Float(0.0));
+    }
+
+    #[test]
+    fn test_arsinh_zero() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(call_function("arsinh", &[Token::Float(0.0)], &mut ctx), Token::Float(0.0));
+    }
+
+    #[test]
+    fn test_arcosh_one() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(call_function("arcosh", &[Token::Float(1.0)], &mut ctx), Token::Float(0.0));
+    }
+
+    #[test]
+    fn test_arcosh_domain() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert!(call_function("arcosh", &[Token::Float(0.0)], &mut ctx).is_error());
+    }
+
+    #[test]
+    fn test_artanh_zero() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(call_function("artanh", &[Token::Float(0.0)], &mut ctx), Token::Float(0.0));
+    }
+
+    #[test]
+    fn test_artanh_domain() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        // artanh(1) = infinity → error
+        assert!(call_function("artanh", &[Token::Float(1.0)], &mut ctx).is_error());
+    }
+
+    #[test]
+    fn test_deg2rad_90() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("deg2rad", &[Token::Float(90.0)], &mut ctx);
+        match result {
+            Token::Float(f) => assert!((f - std::f64::consts::FRAC_PI_2).abs() < 1e-10),
+            _ => panic!("expected float"),
+        }
+    }
+
+    #[test]
+    fn test_rad2deg_pi() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("rad2deg", &[Token::Float(std::f64::consts::PI)], &mut ctx);
+        match result {
+            Token::Float(f) => assert!((f - 180.0).abs() < 1e-10),
+            _ => panic!("expected float"),
+        }
+    }
+
+    #[test]
+    fn test_trig_inverse_pair() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        // sin(asin(0.5)) ≈ 0.5
+        let asin_result = call_function("asin", &[Token::Float(0.5)], &mut ctx);
+        let result = call_function("sin", &[asin_result], &mut ctx);
+        match result {
+            Token::Float(f) => assert!((f - 0.5).abs() < 1e-10),
+            _ => panic!("expected float"),
+        }
+    }
+
+    #[test]
+    fn test_trig_no_args() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert!(call_function("sin", &[], &mut ctx).is_error());
+    }
+
+    #[test]
+    fn test_trig_string_arg() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert!(call_function("sin", &[Token::String("hello".to_string())], &mut ctx).is_error());
+    }
+
+    // === B2: Math Edge Cases ===
+
+    #[test]
+    fn test_e_exponentiation() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("e", &[Token::Integer(2)], &mut ctx);
+        match result {
+            Token::Float(f) => assert!((f - std::f64::consts::E.powi(2)).abs() < 1e-10),
+            _ => panic!("expected float"),
+        }
+    }
+
+    #[test]
+    fn test_e_overflow() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert!(call_function("e", &[Token::Integer(1000)], &mut ctx).is_error());
+    }
+
+    #[test]
+    fn test_abs_empty() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(call_function("abs", &[Token::Empty], &mut ctx), Token::Integer(0));
+    }
+
+    #[test]
+    fn test_abs_error_prop() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        let err = Token::Error("test".to_string());
+        assert!(call_function("abs", &[err], &mut ctx).is_error());
+    }
+
+    #[test]
+    fn test_log_base_one() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        // log(10, 1) → ln(10)/ln(1) = ln(10)/0 = inf → error
+        assert!(call_function("log", &[Token::Float(10.0), Token::Integer(1)], &mut ctx).is_error());
+    }
+
+    #[test]
+    fn test_rnd_multiple() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        // Two calls — both should be valid floats in [0,1)
+        let r1 = call_function("rnd", &[], &mut ctx);
+        let r2 = call_function("rnd", &[], &mut ctx);
+        match (&r1, &r2) {
+            (Token::Float(f1), Token::Float(f2)) => {
+                assert!((0.0..1.0).contains(f1));
+                assert!((0.0..1.0).contains(f2));
+            }
+            _ => panic!("expected floats"),
+        }
+    }
+
+    #[test]
+    fn test_poly_single_coeff() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        // poly(x, c0) = c0
+        assert_eq!(
+            call_function("poly", &[Token::Integer(5), Token::Integer(7)], &mut ctx),
+            Token::Float(7.0)
+        );
+    }
+
+    // === B3: Aggregate Edge Cases ===
+
+    #[test]
+    fn test_min_empty_range() {
+        let mut sheet = Sheet::new();
+        // All cells in range are empty
+        sheet.update();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("min", &[Token::Location([0, 0, 0]), Token::Location([0, 2, 0])], &mut ctx);
+        assert_eq!(result, Token::Empty);
+    }
+
+    #[test]
+    fn test_max_empty_range() {
+        let mut sheet = Sheet::new();
+        sheet.update();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("max", &[Token::Location([0, 0, 0]), Token::Location([0, 2, 0])], &mut ctx);
+        assert_eq!(result, Token::Empty);
+    }
+
+    #[test]
+    fn test_min_single_cell() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(42)]);
+        sheet.update();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("min", &[Token::Location([0, 0, 0]), Token::Location([0, 0, 0])], &mut ctx);
+        assert_eq!(result, Token::Location([0, 0, 0]));
+    }
+
+    #[test]
+    fn test_sum_mixed_types() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(10)]);
+        sheet.putcont(0, 1, 0, vec![Token::Float(5.5)]);
+        sheet.update();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("sum", &[Token::Location([0, 0, 0]), Token::Location([0, 1, 0])], &mut ctx);
+        match result {
+            Token::Float(f) => assert!((f - 15.5).abs() < 1e-10),
+            _ => panic!("expected float, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_n_all_empty() {
+        let mut sheet = Sheet::new();
+        sheet.update();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(
+            call_function("n", &[Token::Location([0, 0, 0]), Token::Location([0, 2, 0])], &mut ctx),
+            Token::Integer(0)
+        );
+    }
+
+    #[test]
+    fn test_sum_3d_range() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(10)]);
+        sheet.putcont(0, 0, 1, vec![Token::Integer(20)]);
+        sheet.update();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("sum", &[Token::Location([0, 0, 0]), Token::Location([0, 0, 1])], &mut ctx);
+        assert_eq!(result, Token::Integer(30));
+    }
+
+    #[test]
+    fn test_aggregate_error() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(10)]);
+        // Put an error-producing expression
+        sheet.putcont(0, 1, 0, vec![Token::Error("bad".to_string())]);
+        sheet.update();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("sum", &[Token::Location([0, 0, 0]), Token::Location([0, 1, 0])], &mut ctx);
+        assert!(result.is_error());
+    }
+
+    #[test]
+    fn test_min_max_at_compose() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(100)]);
+        sheet.putcont(0, 1, 0, vec![Token::Integer(5)]);
+        sheet.putcont(0, 2, 0, vec![Token::Integer(50)]);
+        sheet.update();
+        let mut ctx = make_ctx(&mut sheet);
+        // min returns location of min cell
+        let min_loc = call_function("min", &[Token::Location([0, 0, 0]), Token::Location([0, 2, 0])], &mut ctx);
+        assert_eq!(min_loc, Token::Location([0, 1, 0]));
+        // @(min_loc) gets the value
+        let val = call_function("@", &[min_loc], &mut ctx);
+        assert_eq!(val, Token::Integer(5));
+    }
+
+    // === B4: Type Conversion Edge Cases ===
+
+    #[test]
+    fn test_int_from_float_string() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(
+            call_function("int", &[Token::String("3.14".to_string())], &mut ctx),
+            Token::Integer(3)
+        );
+    }
+
+    #[test]
+    fn test_int_invalid_string() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert!(call_function("int", &[Token::String("abc".to_string())], &mut ctx).is_error());
+    }
+
+    #[test]
+    fn test_frac_negative() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("frac", &[Token::Float(-3.14)], &mut ctx);
+        match result {
+            Token::Float(f) => assert!((f - (-0.14)).abs() < 1e-10),
+            _ => panic!("expected float"),
+        }
+    }
+
+    #[test]
+    fn test_frac_integer() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        // frac of integer returns Integer(0)
+        assert_eq!(call_function("frac", &[Token::Integer(5)], &mut ctx), Token::Integer(0));
+    }
+
+    #[test]
+    fn test_string_location() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Float(3.14159)]);
+        {
+            let cell = sheet.get_or_create_cell(0, 0, 0);
+            cell.precision = 2;
+        }
+        sheet.update();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("string", &[Token::Location([0, 0, 0])], &mut ctx);
+        assert_eq!(result, Token::String("3.14".to_string()));
+    }
+
+    // === B5: String Edge Cases ===
+
+    #[test]
+    fn test_substr_start_equals_end() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(
+            call_function("substr", &[Token::String("hello".to_string()), Token::Integer(2), Token::Integer(2)], &mut ctx),
+            Token::String("l".to_string())
+        );
+    }
+
+    #[test]
+    fn test_substr_start_past_end() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(
+            call_function("substr", &[Token::String("hello".to_string()), Token::Integer(3), Token::Integer(1)], &mut ctx),
+            Token::String(String::new())
+        );
+    }
+
+    #[test]
+    fn test_len_noarg_error() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert!(call_function("len", &[], &mut ctx).is_error());
+    }
+
+    #[test]
+    fn test_substr_noarg_error() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert!(call_function("substr", &[], &mut ctx).is_error());
+    }
+
+    // === B6: Utility Edge Cases ===
+
+    #[test]
+    fn test_env_missing() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(
+            call_function("$", &[Token::String("UNLIKELY_VAR_XYZ_9999".to_string())], &mut ctx),
+            Token::String(String::new())
+        );
+    }
+
+    #[test]
+    fn test_eval_empty_cell() {
+        let mut sheet = Sheet::new();
+        sheet.update();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("eval", &[Token::Location([5, 5, 0])], &mut ctx);
+        assert_eq!(result, Token::Empty);
+    }
+
+    #[test]
+    fn test_eval_depth_limit() {
+        let mut sheet = Sheet::new();
+        sheet.putcont(0, 0, 0, vec![Token::Integer(5)]);
+        sheet.update();
+        let mut ctx = EvalContext { sheet: &mut sheet, x: 0, y: 0, z: 0, max_eval: 0 };
+        let result = call_function("eval", &[Token::Location([0, 0, 0])], &mut ctx);
+        assert!(result.is_error());
+    }
+
+    #[test]
+    fn test_clock_no_args() {
+        let mut sheet = Sheet::new();
+        sheet.update();
+        let mut ctx = make_ctx(&mut sheet);
+        // No clocked value on current cell → Empty
+        let result = call_function("clock", &[], &mut ctx);
+        assert_eq!(result, Token::Empty);
+    }
+
+    #[test]
+    fn test_strftime_with_ts() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        // Use a known timestamp: 1704067200 = 2024-01-01 00:00:00 UTC
+        let result = call_function("strftime", &[Token::String("%Y".to_string()), Token::Integer(1704067200)], &mut ctx);
+        match result {
+            Token::String(s) => assert!(s == "2024" || s == "2023", "expected 2024 (or 2023 in far-west TZ), got: {}", s),
+            _ => panic!("expected string, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_strptime_datetime() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("strptime", &[
+            Token::String("%Y-%m-%d %H:%M".to_string()),
+            Token::String("2024-01-15 10:30".to_string()),
+        ], &mut ctx);
+        match result {
+            Token::Integer(ts) => assert!(ts > 0),
+            other => panic!("expected integer timestamp, got: {:?}", other),
+        }
+    }
+
+    // === B7: Cell Reference Edge Cases ===
+
+    #[test]
+    fn test_at_error_propagation() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        let result = call_function("@", &[Token::Error("test error".to_string())], &mut ctx);
+        assert!(result.is_error());
+    }
+
+    #[test]
+    fn test_x_with_location() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(call_function("x", &[Token::Location([5, 10, 0])], &mut ctx), Token::Integer(5));
+    }
+
+    #[test]
+    fn test_y_with_location() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(call_function("y", &[Token::Location([5, 10, 0])], &mut ctx), Token::Integer(10));
+    }
+
+    #[test]
+    fn test_z_with_location() {
+        let mut sheet = Sheet::new();
+        let mut ctx = make_ctx(&mut sheet);
+        assert_eq!(call_function("z", &[Token::Location([5, 10, 3])], &mut ctx), Token::Integer(3));
     }
 }

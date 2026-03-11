@@ -338,4 +338,51 @@ mod tests {
         assert!(eval_expr("1+").is_error());
         assert!(eval_expr("(1+2").is_error());
     }
+
+    #[test]
+    fn test_function_call_simple() {
+        assert_eq!(eval_expr("sin(0)"), Token::Float(0.0));
+    }
+
+    #[test]
+    fn test_function_call_nested() {
+        let result = eval_expr("sin(asin(0.5))");
+        match result {
+            Token::Float(f) => assert!((f - 0.5).abs() < 1e-10),
+            _ => panic!("expected Float, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_function_call_multi_arg() {
+        assert_eq!(eval_expr("substr(\"hello\",1,3)"), Token::String("ell".to_string()));
+    }
+
+    #[test]
+    fn test_function_call_zero_args() {
+        match eval_expr("time()") {
+            Token::Integer(t) => assert!(t > 0),
+            _ => panic!("expected Integer from time()"),
+        }
+    }
+
+    #[test]
+    fn test_function_in_arithmetic() {
+        assert_eq!(eval_expr("abs(-3)+abs(-4)"), Token::Integer(7));
+    }
+
+    #[test]
+    fn test_nested_parens_deep() {
+        assert_eq!(eval_expr("((((1+2))))"), Token::Integer(3));
+    }
+
+    #[test]
+    fn test_about_equal_operator() {
+        assert_eq!(eval_expr("1.0~=1.0"), Token::Integer(1));
+    }
+
+    #[test]
+    fn test_function_call_error() {
+        assert!(eval_expr("sin()").is_error());
+    }
 }
